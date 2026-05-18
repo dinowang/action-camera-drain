@@ -1,0 +1,13 @@
+{
+    "folders": [
+        {
+            "name": "(all)",
+            "path": "."
+        },
+        {
+            "name": "Android",
+            "path": "src/android"
+        }
+    ],
+    "settings": {}
+}
