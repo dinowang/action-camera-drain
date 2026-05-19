@@ -37,8 +37,15 @@ VOLUME ["/data"]
 ENV DOWNLOAD_ROOT=/data \
     HTTP_PORT=8080
 
-# Non-root user (numeric, since scratch has no /etc/passwd).
-USER 65532:65532
+# NOTE: no USER directive on purpose.
+#
+# The container needs to own the files it creates under DOWNLOAD_ROOT so that
+# `os.Chtimes()` can stamp the source mtime — which requires the running UID
+# to match the bind-mounted host directory's owner (or be root).
+#
+# Default: run as root, which always satisfies chtimes. If you prefer non-root,
+# override via docker-compose `user: "1000:1000"` (matching your NAS user's
+# UID/GID — typically `id -u` / `id -g` on Synology).
 
 EXPOSE 8080
 

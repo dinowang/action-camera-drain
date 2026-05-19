@@ -9,6 +9,7 @@ package job
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -37,6 +38,7 @@ const (
 	EventFileStart   = "file-start"
 	EventFileSkip    = "file-skip"
 	EventFileDone    = "file-done"
+	EventFileWarning = "file-warning"
 	EventFileFailed  = "file-failed"
 	EventConcurrency = "concurrency"
 	EventJobDone     = "job-done"
@@ -255,6 +257,18 @@ func (m *Manager) run(ctx context.Context, j *Job, requestedContainers []string)
 				err := m.fs.WriteAtomic(it.LocalPath, it.MtimeMillis, func(w io.Writer) error {
 					return m.store.Download(c, it.Container, it.BlobName, w)
 				})
+				if errors.Is(err, localfs.ErrChtimesUnsupported) {
+					// File is on disk; mtime persisted to sidecar so future
+					// syncs still skip. Surface as a warning, treat as done.
+					j.emit(Event{
+						Type:      EventFileWarning,
+						Container: it.Container,
+						BlobName:  it.BlobName,
+						Size:      it.Size,
+						Reason:    "chtimes unsupported on this filesystem; intended mtime saved to sidecar",
+					})
+					return it.Size, nil
+				}
 				if err != nil {
 					return 0, err
 				}

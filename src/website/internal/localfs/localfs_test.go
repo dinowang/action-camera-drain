@@ -74,6 +74,39 @@ func TestShouldSkip_MtimeMissing(t *testing.T) {
 	}
 }
 
+func TestShouldSkip_SidecarFallback(t *testing.T) {
+	d := t.TempDir()
+	p := filepath.Join(d, "with-sidecar.mp4")
+	if err := os.WriteFile(p, []byte("12345"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// fs mtime is "now"; sidecar carries the intended mtime instead.
+	wantMs := int64(1700000000000)
+	if err := writeSidecar(p, wantMs); err != nil {
+		t.Fatal(err)
+	}
+	f := New(d)
+	dec := f.ShouldSkip(p, 5, strconv.FormatInt(wantMs, 10))
+	if !dec.Skip {
+		t.Fatalf("expected skip via sidecar, got reason=%q", dec.Reason)
+	}
+	if !strings.Contains(dec.Reason, "sidecar") {
+		t.Fatalf("reason should mention sidecar, got %q", dec.Reason)
+	}
+}
+
+func TestShouldSkip_SidecarMismatch(t *testing.T) {
+	d := t.TempDir()
+	p := filepath.Join(d, "bad-sidecar.mp4")
+	_ = os.WriteFile(p, []byte("12345"), 0o644)
+	_ = writeSidecar(p, 111)
+	f := New(d)
+	dec := f.ShouldSkip(p, 5, "222")
+	if dec.Skip {
+		t.Fatalf("sidecar with different value must not cause skip")
+	}
+}
+
 func TestWriteAtomic_Success(t *testing.T) {
 	d := t.TempDir()
 	f := New(d)

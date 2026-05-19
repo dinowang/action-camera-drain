@@ -18,6 +18,13 @@ services:
       # Synology example: map an SD-card landing zone on volume1 into /data.
       # The web UI exposes one folder per Azure container under this root.
       - /volume1/video/action-cameras:/data
+    # The container must own files it writes under /data so chtimes() can
+    # stamp source mtime. Choose ONE:
+    #   - Leave commented → run as root inside the container (simplest;
+    #     container is isolated so this is fine for a NAS-only service).
+    #   - Or match your NAS user's UID/GID (run `id -u` / `id -g` on the host
+    #     and substitute, e.g., "1026:100").
+    # user: "1026:100"
     # Optional healthcheck via /healthz (uncomment to enable):
     # healthcheck:
     #   test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]

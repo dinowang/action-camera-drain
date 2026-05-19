@@ -88,6 +88,10 @@ async function startJob(containers) {
   currentES = es;
   es.addEventListener("file-start", (e) => log("▶ " + JSON.parse(e.data).blob));
   es.addEventListener("file-skip", (e) => log("⏭ " + JSON.parse(e.data).blob));
+  es.addEventListener("file-warning", (e) => {
+    const d = JSON.parse(e.data);
+    log(`⚠ ${d.blob}: ${d.reason ?? ""}`);
+  });
   es.addEventListener("file-done", (e) => {
     const d = JSON.parse(e.data);
     log(`✓ ${d.blob} (${fmtBytes(d.size)})`);

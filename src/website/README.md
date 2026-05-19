@@ -61,6 +61,28 @@ docker run -d \
   ghcr.io/dinowang/action-camera-catch:latest
 ```
 
+### Container UID（重要）
+
+Catch 寫檔後會用 `os.Chtimes()` 把來源 mtime 蓋回去。Linux 規定 chtimes 的 caller UID 要等於檔案 owner UID 或是 root。
+
+> **預設**：image 內不指定 USER → 容器以 root 跑 → chtimes 永遠成立。
+> 容器是隔離的、只碰 `/data`，對 NAS 來說 root mode 沒安全顧慮。
+
+如果你堅持非 root，請在 `docker-compose.yml` 加 `user:` 對到 host 上掛載點實際的 owner UID/GID：
+
+```bash
+# 在 NAS host 上查 UID/GID
+stat -c '%u:%g' /volume1/video/action-cameras
+```
+
+```yaml
+services:
+  catch:
+    user: "1026:100"   # 換成上一行查出來的數字
+```
+
+若 chtimes 仍然失敗（例如 SMB 掛 share 又沒給 UNIX extension），Catch 會把預期 mtime 寫到 sidecar dotfile `.<filename>.actr-mtime` 並發 `file-warning` 事件，下次 sync 還是會正確跳過已下載的檔案。
+
 ## 環境變數
 
 | Name | 預設 | 說明 |
