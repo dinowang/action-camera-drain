@@ -1,0 +1,1630 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>可行性評估：從 USB 讀卡機識別運動相機的品牌與型號 | eval-action-camera-flash-detection</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='6' y='2' width='20' height='28' rx='2' fill='%23fff' stroke='%230078d4' stroke-width='2'/><line x1='10' y1='10' x2='22' y2='10' stroke='%230078d4' stroke-width='1.5' stroke-linecap='round'/><line x1='10' y1='15' x2='22' y2='15' stroke='%23b0b0b0' stroke-width='1.5' stroke-linecap='round'/><line x1='10' y1='20' x2='18' y2='20' stroke='%23b0b0b0' stroke-width='1.5' stroke-linecap='round'/></svg>">
+<meta name="description" content="評估當運動相機的記憶卡透過 USB 讀卡機連到電腦或手機時，是否能可靠地辨識出來源相機的品牌（GoPro / Insta360 / DJI / …）與型號，以及具體的做法、限制與風險。">
+<meta name="author" content="dinowang">
+<meta name="keywords" content="運動相機, GoPro, Insta360, DJI Osmo Action, DCF, GPMF, MP4 metadata, SD card, USB OTG, 指紋辨識">
+<script>
+// Apply theme early to prevent flash of wrong theme
+(function(){var t=(function(){try{return localStorage.getItem('theme')}catch(_){return null}})()||'auto';var d=t==='auto'?window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light':t;document.documentElement.setAttribute('data-theme',d)})();
+</script>
+<style>
+:root {
+  --sidebar-width: 300px;
+  --bg-sidebar: #f8f9fa;
+  --bg-main: #ffffff;
+  --border-color: #dee2e6;
+  --accent: #0078d4;
+  --accent-bg: #e8f4fd;
+  --text: #212529;
+  --text-muted: #6c757d;
+  --code-bg: #f4f4f4;
+  --code-block-bg: #f6f8fa;
+  --code-block-text: #24292e;
+  --table-header-bg: #f1f3f5;
+  --table-stripe-bg: #fafbfc;
+  --blockquote-bg: #f8f9fa;
+  --blockquote-text: #495057;
+  --sidebar-hover: #e9ecef;
+  --sidebar-scrollbar: #ccc;
+  --lightbox-bg: rgba(0,0,0,0.7);
+  --copy-btn-bg: #f0f0f0;
+  --link-color: #0078d4;
+  --link-visited: #68217a;
+}
+:root[data-theme="dark"] {
+  --bg-sidebar: #1e1e1e;
+  --bg-main: #181818;
+  --border-color: #3a3a3a;
+  --accent: #4da6ff;
+  --accent-bg: #1a2e40;
+  --text: #d4d4d4;
+  --text-muted: #888;
+  --code-bg: #2d2d2d;
+  --code-block-bg: #0d0d0d;
+  --code-block-text: #d4d4d4;
+  --table-header-bg: #2a2a2a;
+  --table-stripe-bg: #1f1f1f;
+  --blockquote-bg: #222;
+  --blockquote-text: #aaa;
+  --sidebar-hover: #2a2a2a;
+  --sidebar-scrollbar: #555;
+  --lightbox-bg: rgba(0,0,0,0.85);
+  --copy-btn-bg: #333;
+  --link-color: #6cb6ff;
+  --link-visited: #d2a8ff;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 20px; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans TC", sans-serif;
+  color: var(--text);
+  background: var(--bg-main);
+  line-height: 1.7;
+  display: flex;
+  min-height: 100vh;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+/* Sidebar */
+nav.sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: var(--sidebar-width);
+  overflow: hidden;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-color);
+  padding: 20px 0 0;
+  z-index: 100;
+  scrollbar-width: thin;
+  display: flex;
+  flex-direction: column;
+  transition: width 0.25s ease, min-width 0.25s ease;
+}
+nav.sidebar .toc-links {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+  padding-bottom: 8px;
+  scrollbar-width: thin;
+}
+nav.sidebar::-webkit-scrollbar { width: 0; }
+nav.sidebar::-webkit-scrollbar-thumb { background: var(--sidebar-scrollbar); border-radius: 2px; }
+nav.sidebar .toc-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 0 16px 12px;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.toc-title-text { flex: 1; }
+.sidebar-collapse-btn {
+  border: none; background: transparent; color: var(--text-muted);
+  font-size: 16px; cursor: pointer; padding: 0 4px; line-height: 1;
+  transition: color 0.15s ease; flex-shrink: 0;
+}
+.sidebar-collapse-btn:hover { color: var(--text); }
+nav.sidebar a {
+  display: block;
+  text-decoration: none;
+  color: var(--text);
+  padding: 5px 16px;
+  font-size: 13px;
+  border-left: 3px solid transparent;
+  transition: all 0.15s ease;
+}
+nav.sidebar a.toc-h3 { padding-left: 32px; font-size: 12px; color: var(--text-muted); }
+nav.sidebar a:hover { background: var(--sidebar-hover); color: var(--accent); }
+nav.sidebar a.active {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-left-color: var(--accent);
+  font-weight: 600;
+}
+nav.sidebar a.active.toc-h3 { font-weight: 500; }
+.toc-links::-webkit-scrollbar { width: 4px; }
+.toc-links::-webkit-scrollbar-thumb { background: var(--sidebar-scrollbar); border-radius: 2px; }
+
+/* Main content */
+main.content {
+  margin-left: var(--sidebar-width);
+  flex: 1;
+  max-width: 900px;
+  padding: 40px 48px 80px;
+  overflow-x: hidden;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  transition: margin-left 0.25s ease;
+}
+main.content h1 { font-size: 2em; margin: 0 0 16px; padding-bottom: 10px; border-bottom: 2px solid var(--accent); }
+main.content h2 { font-size: 1.5em; margin: 40px 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color); color: var(--accent); }
+main.content h3 { font-size: 1.2em; margin: 28px 0 12px; }
+main.content h4 { font-size: 1.05em; margin: 20px 0 8px; }
+main.content p { margin: 0 0 12px; }
+main.content ul, main.content ol { margin: 0 0 12px; padding-left: 28px; }
+main.content li { margin-bottom: 4px; }
+main.content hr { border: none; border-top: 1px solid var(--border-color); margin: 32px 0; }
+
+main.content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0 16px;
+  font-size: 14px;
+}
+main.content th, main.content td {
+  border: 1px solid var(--border-color);
+  padding: 8px 12px;
+  text-align: left;
+}
+main.content th { background: var(--table-header-bg); font-weight: 600; }
+main.content tr:nth-child(even) { background: var(--table-stripe-bg); }
+
+main.content code {
+  background: var(--code-bg);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.9em;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+main.content pre {
+  background: var(--code-block-bg);
+  color: var(--code-block-text);
+  padding: 16px 20px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 12px 0 16px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+main.content pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+/* highlight.js syntax highlighting — GitHub Light theme */
+pre code .hljs-doctag,
+pre code .hljs-keyword,
+pre code .hljs-meta .hljs-keyword,
+pre code .hljs-template-tag,
+pre code .hljs-template-variable,
+pre code .hljs-type,
+pre code .hljs-variable.language_ { color: #d73a49; }
+pre code .hljs-title,
+pre code .hljs-title.class_,
+pre code .hljs-title.class_.inherited__,
+pre code .hljs-title.function_ { color: #6f42c1; }
+pre code .hljs-attr,
+pre code .hljs-attribute,
+pre code .hljs-literal,
+pre code .hljs-meta,
+pre code .hljs-number,
+pre code .hljs-operator,
+pre code .hljs-selector-attr,
+pre code .hljs-selector-class,
+pre code .hljs-selector-id,
+pre code .hljs-variable { color: #005cc5; }
+pre code .hljs-meta .hljs-string,
+pre code .hljs-regexp,
+pre code .hljs-string { color: #032f62; }
+pre code .hljs-built_in,
+pre code .hljs-symbol { color: #e36209; }
+pre code .hljs-code,
+pre code .hljs-comment,
+pre code .hljs-formula { color: #6a737d; }
+pre code .hljs-name,
+pre code .hljs-quote,
+pre code .hljs-selector-pseudo,
+pre code .hljs-selector-tag { color: #22863a; }
+pre code .hljs-subst { color: #24292e; }
+pre code .hljs-section { color: #005cc5; font-weight: 700; }
+pre code .hljs-bullet { color: #735c0f; }
+pre code .hljs-emphasis { font-style: italic; }
+pre code .hljs-strong { font-weight: 700; }
+pre code .hljs-addition { color: #22863a; background-color: #f0fff4; }
+pre code .hljs-deletion { color: #b31d28; background-color: #ffeef0; }
+/* highlight.js syntax highlighting — GitHub Dark theme */
+[data-theme="dark"] pre code .hljs-doctag,
+[data-theme="dark"] pre code .hljs-keyword,
+[data-theme="dark"] pre code .hljs-meta .hljs-keyword,
+[data-theme="dark"] pre code .hljs-template-tag,
+[data-theme="dark"] pre code .hljs-template-variable,
+[data-theme="dark"] pre code .hljs-type,
+[data-theme="dark"] pre code .hljs-variable.language_ { color: #ff7b72; }
+[data-theme="dark"] pre code .hljs-title,
+[data-theme="dark"] pre code .hljs-title.class_,
+[data-theme="dark"] pre code .hljs-title.class_.inherited__,
+[data-theme="dark"] pre code .hljs-title.function_ { color: #d2a8ff; }
+[data-theme="dark"] pre code .hljs-attr,
+[data-theme="dark"] pre code .hljs-attribute,
+[data-theme="dark"] pre code .hljs-literal,
+[data-theme="dark"] pre code .hljs-meta,
+[data-theme="dark"] pre code .hljs-number,
+[data-theme="dark"] pre code .hljs-operator,
+[data-theme="dark"] pre code .hljs-selector-attr,
+[data-theme="dark"] pre code .hljs-selector-class,
+[data-theme="dark"] pre code .hljs-selector-id,
+[data-theme="dark"] pre code .hljs-variable { color: #79c0ff; }
+[data-theme="dark"] pre code .hljs-meta .hljs-string,
+[data-theme="dark"] pre code .hljs-regexp,
+[data-theme="dark"] pre code .hljs-string { color: #a5d6ff; }
+[data-theme="dark"] pre code .hljs-built_in,
+[data-theme="dark"] pre code .hljs-symbol { color: #ffa657; }
+[data-theme="dark"] pre code .hljs-code,
+[data-theme="dark"] pre code .hljs-comment,
+[data-theme="dark"] pre code .hljs-formula { color: #8b949e; }
+[data-theme="dark"] pre code .hljs-name,
+[data-theme="dark"] pre code .hljs-quote,
+[data-theme="dark"] pre code .hljs-selector-pseudo,
+[data-theme="dark"] pre code .hljs-selector-tag { color: #7ee787; }
+[data-theme="dark"] pre code .hljs-subst { color: #c9d1d9; }
+[data-theme="dark"] pre code .hljs-section { color: #1f6feb; font-weight: 700; }
+[data-theme="dark"] pre code .hljs-bullet { color: #f2cc60; }
+[data-theme="dark"] pre code .hljs-addition { color: #aff5b4; background-color: #033a16; }
+[data-theme="dark"] pre code .hljs-deletion { color: #ffdcd7; background-color: #67060c; }
+main.content blockquote {
+  border-left: 4px solid var(--accent);
+  background: var(--blockquote-bg);
+  padding: 12px 16px;
+  margin: 12px 0 16px;
+  color: var(--blockquote-text);
+}
+main.content blockquote p { margin-bottom: 4px; }
+main.content blockquote p:last-child { margin-bottom: 0; }
+main.content img {
+  max-width: 100%;
+  height: auto;
+  /* border: 1px solid var(--border-color); */
+  border-radius: 6px;
+  margin: 8px 0;
+  /* box-shadow: 0 2px 8px rgba(0,0,0,0.08); */
+  cursor: zoom-in;
+}
+main.content p:has(> img:only-child) {
+  text-align: center;
+}
+main.content a { color: var(--link-color); text-decoration: underline; text-underline-offset: 2px; }
+main.content a:visited { color: var(--link-visited); }
+main.content a:hover { color: var(--accent); }
+main.content ul.contains-task-list { list-style: none; padding-left: 1.2em; }
+main.content li.task-list-item { list-style: none; position: relative; padding-left: 0; }
+/* GFM-style task list checkboxes: 自訂外觀，比原生 checkbox 易讀 */
+main.content li.task-list-item > input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0 8px 0 -22px;
+  vertical-align: -3px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg);
+  cursor: default;
+  position: relative;
+  flex-shrink: 0;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+main.content li.task-list-item > input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+main.content li.task-list-item > input[type="checkbox"]:checked::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 0px;
+  width: 5px;
+  height: 9px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+main.content li.task-list-item > input[type="checkbox"]:disabled {
+  opacity: 1;
+}
+main.content input[type="checkbox"] { margin-right: 6px; }
+
+/* Inline code Copy button (popup 方式，不佔用文字流空間) */
+.inline-code-wrapper {
+  position: relative;
+  display: inline-block;
+}
+/* 用 ::after 偽元素向右延伸 hover 區域，讓滑鼠移向 Copy 按鈕時不會斷開 */
+.inline-code-wrapper::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: -50px;
+  width: 50px;
+  height: 100%;
+  pointer-events: none;
+}
+.inline-code-wrapper:hover::after {
+  pointer-events: auto;
+}
+.copy-btn {
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--copy-btn-bg);
+  color: var(--text-muted);
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.copy-btn:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.inline-copy {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translate(calc(100% + 4px), -50%);
+  opacity: 0;
+  pointer-events: none;
+  padding: 1px 5px;
+  transition: opacity 0.15s ease;
+  z-index: 10;
+}
+.inline-code-wrapper:hover .inline-copy {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Code block Copy button */
+.code-block-wrapper {
+  position: relative;
+  margin: 12px 0 16px;
+}
+.code-block-wrapper pre {
+  margin: 0;
+}
+.code-block-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 3px 10px;
+  background: rgba(255,255,255,0.12);
+  color: #aaa;
+  border-color: rgba(255,255,255,0.2);
+  z-index: 1;
+}
+.code-block-copy:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+/* Lightbox overlay */
+.lightbox-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--lightbox-bg);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+.lightbox-overlay.active {
+  opacity: 1;
+}
+.lightbox-overlay > img,
+.lightbox-overlay > span {
+  position: absolute;
+  border: none;
+  border-radius: 4px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  cursor: zoom-out;
+  transition: all 0.3s ease;
+  max-width: 90vw;
+  max-height: 90vh;
+}
+.lightbox-overlay > img {
+  object-fit: contain;
+}
+.lightbox-overlay > span {
+  display: block;
+  overflow: visible;
+}
+.lightbox-overlay > span > img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+/* Sidebar collapsed state */
+nav.sidebar.sidebar-collapsed {
+  width: 40px;
+  min-width: 40px;
+  padding: 20px 0 0;
+}
+nav.sidebar.sidebar-collapsed .toc-title {
+  padding: 0 0 12px;
+  justify-content: center;
+}
+nav.sidebar.sidebar-collapsed .toc-title-text,
+nav.sidebar.sidebar-collapsed .toc-links,
+nav.sidebar.sidebar-collapsed .sidebar-controls {
+  display: none;
+}
+nav.sidebar.sidebar-collapsed .sidebar-collapse-btn {
+  padding: 4px;
+}
+body.sidebar-is-collapsed main.content {
+  margin-left: 40px;
+}
+
+/* Sidebar bottom controls */
+.sidebar-controls {
+  flex: 0 0 auto;
+  padding: 8px;
+  border-top: 1px solid var(--border-color);
+  margin-top: auto;
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  height: 44px;
+  box-sizing: border-box;
+}
+.theme-switcher {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 3px;
+  min-width: 0;
+}
+.theme-option {
+  border: none;
+  background: var(--code-bg);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+  -webkit-user-select: none;
+  display: flex; align-items: center; justify-content: center;
+  min-width: 0;
+  overflow: hidden;
+}
+.theme-option:hover { color: var(--text); }
+.theme-option.active {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+}
+
+/* Mobile floating expand button — only shown on small screens when sidebar collapsed */
+.mobile-expand-btn {
+  display: none;
+  position: fixed;
+  top: 50%;
+  left: 0;
+  transform: translateY(-50%);
+  z-index: 150;
+  width: 32px;
+  height: 64px;
+  border: none;
+  background: var(--bg-sidebar);
+  color: var(--text-muted);
+  border-right: 1px solid var(--border-color);
+  border-top-right-radius: 8px;
+  border-bottom-right-radius: 8px;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0;
+  box-shadow: 2px 0 8px rgba(0,0,0,0.15);
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.mobile-expand-btn:hover { color: var(--text); background: var(--code-bg); }
+
+/* Small screens: default to collapsed, expand via overlay */
+@media (max-width: 900px) {
+  nav.sidebar {
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    width: var(--sidebar-width);
+    min-width: var(--sidebar-width);
+    overflow: visible;
+  }
+  nav.sidebar.sidebar-expanded {
+    transform: translateX(0);
+    z-index: 200;
+    box-shadow: 4px 0 16px rgba(0,0,0,0.2);
+  }
+  nav.sidebar.sidebar-expanded .toc-title {
+    padding: 0 16px 12px;
+    justify-content: flex-start;
+  }
+  nav.sidebar.sidebar-expanded .toc-title-text,
+  nav.sidebar.sidebar-expanded .toc-links,
+  nav.sidebar.sidebar-expanded .sidebar-controls {
+    display: flex;
+  }
+  nav.sidebar.sidebar-expanded .toc-links {
+    display: block;
+  }
+  /* In-sidebar collapse button becomes a tab anchored to the right edge of sidebar */
+  nav.sidebar .sidebar-collapse-btn {
+    position: absolute;
+    top: 50%;
+    left: 100%;
+    transform: translateY(-50%);
+    width: 32px;
+    height: 64px;
+    background: var(--bg-sidebar);
+    color: var(--text-muted);
+    border: 1px solid var(--border-color);
+    border-left: none;
+    border-top-right-radius: 8px;
+    border-bottom-right-radius: 8px;
+    font-size: 18px;
+    padding: 0;
+    box-shadow: 2px 0 8px rgba(0,0,0,0.15);
+    z-index: 201;
+  }
+  main.content {
+    margin-left: 0;
+    padding: 24px;
+  }
+  body.sidebar-is-collapsed main.content {
+    margin-left: 0;
+  }
+  .mobile-expand-btn {
+    display: block;
+  }
+  nav.sidebar.sidebar-expanded ~ .mobile-expand-btn,
+  body:has(nav.sidebar.sidebar-expanded) .mobile-expand-btn {
+    display: none;
+  }
+}
+@media (max-width: 600px) {
+  main.content { padding: 16px 12px 48px; max-width: 100vw; }
+  main.content h1 { font-size: 1.5em; }
+  main.content h2 { font-size: 1.25em; margin: 28px 0 12px; }
+  main.content h3 { font-size: 1.1em; margin: 20px 0 8px; }
+  main.content table { font-size: 13px; }
+  main.content th, main.content td { padding: 6px 8px; }
+  .inline-copy { display: none; }
+  nav.sidebar.sidebar-expanded { width: 220px; min-width: 220px; }
+  .theme-option, .slides-btn { font-size: 11px; }
+}
+
+/* Print page setup with customised margin-box headers/footers.
+   Supported on Chromium 131+ (Chrome, Edge). Safari/Firefox ignore the
+   margin-box content and fall back to their built-in browser header/footer.
+   When margin-box content is present, Chromium auto-suppresses its default
+   built-in header (date + title) and footer (URL + page numbers). */
+@page {
+  size: A4;
+  margin: 18mm 18mm 22mm 18mm;
+
+  @top-left {
+    content: "可行性評估：從 USB 讀卡機識別運動相機的品牌與型號";
+    font: 10pt / 1.2 -apple-system, "Segoe UI", system-ui, sans-serif;
+    color: #555;
+    padding-bottom: 4mm;
+  }
+  @top-right {
+    content: "2026-05-19 03:35:00";
+    font: 10pt / 1.2 -apple-system, "Segoe UI", system-ui, sans-serif;
+    color: #777;
+    padding-bottom: 4mm;
+  }
+  @bottom-left {
+    content: "dinowang";
+    font: 9pt / 1.2 -apple-system, "Segoe UI", system-ui, sans-serif;
+    color: #777;
+    padding-top: 4mm;
+  }
+  @bottom-right {
+    content: "Page " counter(page) " of " counter(pages);
+    font: 9pt / 1.2 -apple-system, "Segoe UI", system-ui, sans-serif;
+    color: #777;
+    padding-top: 4mm;
+  }
+}
+
+/* Print mode: hide sidebar, controls, and any floating UI; show only the
+   document body in full width with print-friendly colors. */
+@media print {
+  /* Force a clean white background regardless of user theme */
+  :root, [data-theme="dark"] {
+    --bg-main: #ffffff;
+    --bg-sidebar: #ffffff;
+    --text: #000000;
+    --text-muted: #333333;
+    --accent: #0a4d8c;
+    --accent-bg: transparent;
+    --border-color: #999999;
+    --code-bg: #f0f0f0;
+    --code-block-bg: #f6f6f6;
+    --code-block-text: #000000;
+    --table-header-bg: #eeeeee;
+    --table-stripe-bg: #f6f6f6;
+    --blockquote-bg: transparent;
+    --blockquote-border: #999999;
+    --blockquote-text: #333333;
+  }
+  body { background: #ffffff; color: #000000; }
+
+  /* Hide chrome */
+  nav.sidebar,
+  .sidebar-collapse-btn,
+  .mobile-expand-btn,
+  .copy-btn,
+  .inline-copy,
+  .slides-btn,
+  .theme-switcher,
+  .sidebar-controls,
+  .presentation-overlay,
+  .presentation-close,
+  .laser-dot,
+  /* lightbox overlay (markdown-to-html) */
+  .lightbox-overlay,
+  /* animation-maker floating overlays (host + controls) */
+  [data-anim-host],
+  [data-anim-ctrl] {
+    display: none !important;
+  }
+
+  /* Inline-code wrapper still shows the code (just hide the hover copy btn,
+     covered above), so no change there. */
+
+  /* Expand main content to the full page; remove the sidebar offset */
+  main.content {
+    margin: 0 !important;
+    padding: 0 !important;
+    max-width: none !important;
+    width: 100% !important;
+  }
+  body.sidebar-is-collapsed main.content,
+  body main.content {
+    margin-left: 0 !important;
+  }
+
+  /* Print typography niceties */
+  main.content a {
+    color: #000000;
+    text-decoration: underline;
+  }
+  main.content h1, main.content h2, main.content h3, main.content h4 {
+    page-break-after: avoid;
+  }
+  main.content pre, main.content table, main.content blockquote, main.content img {
+    page-break-inside: avoid;
+  }
+  main.content img {
+    max-width: 100% !important;
+    height: auto !important;
+  }
+  /* If a link has an http(s):// URL, append it after the text for paper trails.
+     Skip anchors (same-page) and obviously-internal hrefs. */
+  main.content a[href^="http"]::after {
+    content: " (" attr(href) ")";
+    font-size: 0.85em;
+    color: #555;
+    word-break: break-all;
+  }
+}
+
+/* Presentation overlay */
+.presentation-overlay {
+  display: none;
+  position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+  z-index: 99999;
+}
+.presentation-overlay.active { display: block; cursor: none; }
+.presentation-overlay.active * { cursor: none; }
+.presentation-overlay.active .reveal .controls { cursor: pointer; }
+.presentation-loading {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: 36px; height: 36px; border: 3px solid rgba(128,128,128,0.2);
+  border-top-color: var(--accent); border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: translate(-50%, -50%) rotate(360deg); } }
+.laser-dot {
+  position: fixed; width: 21px; height: 21px; border-radius: 50%;
+  background: #e00; box-shadow: 0 0 8px 3px rgba(224,0,0,0.5);
+  pointer-events: none; z-index: 100001; transform: translate(-50%,-50%);
+  display: none;
+}
+.presentation-close {
+  position: fixed; top: 12px; right: 16px; z-index: 100000;
+  background: rgba(128,128,128,0.3); border: none; color: #fff;
+  font-size: 24px; width: 40px; height: 40px; border-radius: 50%;
+  cursor: pointer; display: none; align-items: center; justify-content: center;
+  backdrop-filter: blur(4px); transition: background 0.2s;
+}
+.presentation-close:hover { background: rgba(128,128,128,0.5); }
+.presentation-overlay.active ~ .presentation-close { display: flex; }
+
+/* Reveal slide content styling */
+.presentation-overlay .reveal .slides section { text-align: left; }
+.presentation-overlay .reveal .slides h1 { font-size: 1.6em; margin-bottom: 0.4em; border: none; padding: 0; }
+.presentation-overlay .reveal .slides h2 { font-size: 1.3em; margin-bottom: 0.3em; border: none; padding: 0; }
+.presentation-overlay .reveal .slides h3 { font-size: 1.1em; margin-top: 0.6em; margin-bottom: 0.3em; border: none; padding: 0; }
+.presentation-overlay .reveal .slides h4 { font-size: 0.95em; margin-top: 0.5em; margin-bottom: 0.2em; border: none; padding: 0; }
+.presentation-overlay .reveal .slides p,
+.presentation-overlay .reveal .slides li,
+.presentation-overlay .reveal .slides td,
+.presentation-overlay .reveal .slides th { font-size: 0.65em; line-height: 1.5; }
+.presentation-overlay .reveal .slides li > p { font-size: inherit; margin: 0; }
+.presentation-overlay .reveal .slides li { margin-bottom: 0.15em; }
+.presentation-overlay .reveal .slides pre { font-size: 0.55em; }
+.presentation-overlay .reveal .slides table { font-size: 0.6em; width: 100%; }
+.presentation-overlay .reveal .slides ul,
+.presentation-overlay .reveal .slides ol { display: block; margin-left: 1em; }
+.presentation-overlay .reveal .slides img { max-height: 55vh; display: block; margin: 0.5em auto; }
+.presentation-overlay .reveal .slides > section > section { overflow-y: auto; max-height: 100%; }
+/* Reset page styles inside reveal — let reveal theme control colors */
+.presentation-overlay .reveal .slides h1,
+.presentation-overlay .reveal .slides h2,
+.presentation-overlay .reveal .slides h3,
+.presentation-overlay .reveal .slides h4,
+.presentation-overlay .reveal .slides p,
+.presentation-overlay .reveal .slides li,
+.presentation-overlay .reveal .slides td,
+.presentation-overlay .reveal .slides th,
+.presentation-overlay .reveal .slides a,
+.presentation-overlay .reveal .slides code,
+.presentation-overlay .reveal .slides blockquote {
+  color: inherit;
+}
+.presentation-overlay .reveal .slides pre,
+.presentation-overlay .reveal .slides code {
+  background: rgba(128,128,128,0.15);
+}
+.presentation-overlay .reveal .slides table {
+  border-collapse: collapse;
+}
+.presentation-overlay .reveal .slides th,
+.presentation-overlay .reveal .slides td {
+  border: 1px solid rgba(128,128,128,0.3);
+  padding: 4px 8px;
+  background: transparent;
+}
+.presentation-overlay .reveal .slides th {
+  background: rgba(128,128,128,0.1);
+  font-weight: 600;
+}
+.presentation-overlay .reveal .slides tr:nth-child(even) {
+  background: transparent;
+}
+.presentation-overlay .reveal .slides blockquote {
+  background: rgba(128,128,128,0.1);
+  border-left: 4px solid rgba(128,128,128,0.4);
+  padding: 8px 16px;
+  margin: 8px 0;
+}
+.presentation-overlay .reveal .slides hr {
+  border-color: rgba(128,128,128,0.3);
+}
+.presentation-overlay .reveal .slides section > hr:last-child {
+  display: none;
+}
+.presentation-overlay .copy-btn {
+  display: none !important;
+}
+
+/* Slides button in sidebar */
+.slides-btn {
+  flex: 0 0 36px;
+  background: var(--code-bg); color: var(--text-muted); border: none; border-radius: 6px;
+  font-size: 13px; cursor: pointer; transition: all 0.15s ease;
+  display: flex; align-items: center; justify-content: center;
+  min-width: 0; overflow: hidden;
+}
+.slides-btn:hover { color: var(--text); background: var(--border-color); }
+</style>
+</head>
+<body>
+<button class="mobile-expand-btn" id="mobileExpandBtn" title="展開側欄" aria-label="展開側欄">»</button>
+<nav class="sidebar" id="sidebar">
+  <div class="toc-title"><span class="toc-title-text">目錄</span><button class="sidebar-collapse-btn" id="sidebarCollapseBtn" title="收合側欄">«</button></div>
+  <div class="toc-links">
+  <a class="toc-h2" href="#結論摘要" data-target="結論摘要">結論摘要</a>
+  <a class="toc-h2" href="#背景" data-target="背景">背景</a>
+  <a class="toc-h2" href="#卡上會看到什麼跨品牌共通基線" data-target="卡上會看到什麼跨品牌共通基線">卡上會看到什麼（跨品牌共通基線）</a>
+  <a class="toc-h2" href="#各品牌的指紋" data-target="各品牌的指紋">各品牌的指紋</a>
+  <a class="toc-h3" href="#goprohero-5-以後現代韌體" data-target="goprohero-5-以後現代韌體">GoPro（HERO 5 以後，現代韌體）</a>
+  <a class="toc-h3" href="#insta360one-x-x2-x3-x4-x5one-rrs-等" data-target="insta360one-x-x2-x3-x4-x5one-rrs-等">Insta360（ONE X / X2 / X3 / X4 / X5、ONE R/RS 等）</a>
+  <a class="toc-h3" href="#dji-osmo-action以及-osmo-pocket-系列但有保留" data-target="dji-osmo-action以及-osmo-pocket-系列但有保留">DJI Osmo Action（以及 Osmo Pocket 系列，但有保留）</a>
+  <a class="toc-h3" href="#sony-action-cam-其他-未知" data-target="sony-action-cam-其他-未知">Sony Action Cam / 其他 / 未知</a>
+  <a class="toc-h2" href="#建議的偵測策略" data-target="建議的偵測策略">建議的偵測策略</a>
+  <a class="toc-h2" href="#需要的軟體-驅動程式" data-target="需要的軟體-驅動程式">需要的軟體 / 驅動程式</a>
+  <a class="toc-h2" href="#限制與風險" data-target="限制與風險">限制與風險</a>
+  <a class="toc-h2" href="#給-action-camera-drain-的建議落地路徑" data-target="給-action-camera-drain-的建議落地路徑">給 Action Camera Drain 的建議落地路徑</a>
+  <a class="toc-h2" href="#測試-驗證計畫" data-target="測試-驗證計畫">測試 / 驗證計畫</a>
+  <a class="toc-h2" href="#rollback-計畫" data-target="rollback-計畫">Rollback 計畫</a>
+  <a class="toc-h2" href="#後續-todo" data-target="後續-todo">後續 / TODO</a>
+
+  </div>
+  <div class="sidebar-controls">
+    <div class="theme-switcher">
+      <button class="theme-option active" data-theme="auto" title="Auto">🖥️</button>
+      <button class="theme-option" data-theme="light" title="Light">☀️</button>
+      <button class="theme-option" data-theme="dark" title="Dark">🌙</button>
+    </div>
+    <button class="slides-btn" id="slidesBtn" title="Presentation mode">▶</button>
+  </div>
+</nav>
+
+<div class="presentation-overlay" id="presentationOverlay"></div>
+<div class="laser-dot" id="laserDot"></div>
+<button class="presentation-close" id="presentationClose" title="Exit presentation">✕</button>
+
+<main class="content">
+<h1 id="可行性評估從-usb-讀卡機識別運動相機的品牌與型號">可行性評估：從 USB 讀卡機識別運動相機的品牌與型號</h1>
+<h2 id="結論摘要">結論摘要</h2>
+<p>只要記憶卡沒有被使用者用電腦動過手腳，<strong>品牌</strong>（GoPro / Insta360 / DJI / …）的判斷在實務上對 GoPro 與 360° 模式的 Insta360 是<strong>可靠的</strong>。<strong>Insta360 ONE R / RS 掛平面鏡頭模組</strong>（如 4K Wide-Angle Mod）時卡上只剩 <span class="inline-code-wrapper"><code>.mp4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>，這時副檔名訊號失效，只能靠 MP4 內部 metadata。<strong>型號</strong>的判斷對 GoPro 與 DJI 來說是可靠的（型號字串直接寫在檔案的 metadata 裡），Insta360 則介於可靠與推論之間，取決於使用了哪個鏡頭模組。</p>
+<p>辨識邏輯應該是<strong>多訊號加上信心分數</strong>的設計，不能只看單一指紋。卡本身是一個普通的 FAT/exFAT 磁區 — 使用者在電腦上動過的任何操作都可能把線索抹掉。</p>
+<blockquote>
+<p>結論：作為「盡力而為」的功能 <strong>可行</strong>；作為「保證一定正確」的功能 <strong>不可行</strong>。結果應該以「應該是 <品牌>/<型號>」加上信心分數呈現，並永遠允許使用者手動覆寫。</p>
+</blockquote>
+<h2 id="背景">背景</h2>
+<p>依照 Action Camera Drain 的使用流程（見 <span class="inline-code-wrapper"><code>.github/copilot-instructions.md</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>），記憶卡會從相機取出、放進 USB 讀卡機、接到 Android 手機（Android 14+，<span class="inline-code-wrapper"><code>minSdk = 34</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）。若能辨識來源相機，App 可以：</p>
+<ul>
+<li>預設合理的上傳目錄／資料夾名稱。</li>
+<li>採用對應的擷取策略（例如配對 Insta360 的兩個 <span class="inline-code-wrapper"><code>.insv</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 半邊、忽略 GoPro 的 <span class="inline-code-wrapper"><code>.LRV</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 與 <span class="inline-code-wrapper"><code>.THM</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 代理檔、跟著 DJI 的 <span class="inline-code-wrapper"><code>100MEDIA</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 分頁流程）。</li>
+<li>顯示符合該型號的 UI 提示與進度預估。</li>
+</ul>
+<p>它<strong>不是</strong>安全性／身份驗證訊號 — 使用者隨時可以做出一張看起來像任何品牌的卡。</p>
+<h2 id="卡上會看到什麼跨品牌共通基線">卡上會看到什麼（跨品牌共通基線）</h2>
+<p>所有主流運動相機都會把卡格式化成 <strong>DCF</strong>（Design rule for Camera File system，JEITA CP-3461）。DCF 也是所有 DSLR 與手機相機共用的標準，所以<em>外層</em>長相是一樣的：</p>
+<ul>
+<li>檔案系統是 <strong>FAT32</strong>（≤ 32 GB）或 <strong>exFAT</strong>（> 32 GB）。</li>
+<li>最上層目錄：<span class="inline-code-wrapper"><code>DCIM/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>。</li>
+<li><span class="inline-code-wrapper"><code>DCIM/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 底下是 <span class="inline-code-wrapper"><code>NNNAAAAA</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 命名的子資料夾 — 三位數 <span class="inline-code-wrapper"><code>100..999</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 加上五個英數字元，通常會帶廠牌字尾。</li>
+<li>檔案命名 <span class="inline-code-wrapper"><code>AAAAnnnn.EXT</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> — 四個英數字元加上四位數序號。</li>
+</ul>
+<p>來源：<a href="https://en.wikipedia.org/wiki/Design_rule_for_Camera_File_system">Wikipedia: DCF</a>（引自 JEITA CP-3461）。</p>
+<p>也就是說 <strong><span class="inline-code-wrapper"><code>DCIM/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 的存在只能告訴你「這是<em>一張</em>相機卡」，沒辦法分辨是哪一台</strong>。品牌／型號的判斷得從廠商各自塞進去的內容下手。</p>
+<h2 id="各品牌的指紋">各品牌的指紋</h2>
+<h3 id="goprohero-5-以後現代韌體">GoPro（HERO 5 以後，現代韌體）</h3>
+<table>
+<thead><tr>
+<th>訊號</th>
+<th>位置</th>
+<th style="text-align:center">可靠度</th>
+<th>備註</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>DCIM 子資料夾 <span class="inline-code-wrapper"><code>100GOPRO</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>101GOPRO</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、…</td>
+<td>檔案系統</td>
+<td style="text-align:center">高</td>
+<td>符合 DCF 規範；<span class="inline-code-wrapper"><code>GOPRO</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 字尾是強訊號。</td>
+</tr>
+<tr>
+<td>檔名前綴 <span class="inline-code-wrapper"><code>GH</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>GX</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>GP</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>GS</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>GOPR</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>檔案系統</td>
+<td style="text-align:center">高</td>
+<td>兩字母前綴對應編碼／分段策略。HERO 5–13 的使用者文件廣泛記載；視為<strong>業界廣為流傳</strong>，<strong>未經 GoPro 官方文件直接驗證</strong>。</td>
+</tr>
+<tr>
+<td>同 4 位數編號的 <span class="inline-code-wrapper"><code>.LRV</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（低解析代理）與 <span class="inline-code-wrapper"><code>.THM</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（縮圖）伴隨檔</td>
+<td>檔案系統</td>
+<td style="text-align:center">高</td>
+<td>在卡上幾乎是 GoPro 的獨家標誌。</td>
+</tr>
+<tr>
+<td>MP4 中的 <strong>GPMF metadata track</strong>（<span class="inline-code-wrapper"><code>gpmd</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> handler）</td>
+<td>檔案內部</td>
+<td style="text-align:center"><strong>非常高</strong></td>
+<td>GPMF（GoPro Metadata Format）規格在 <span class="inline-code-wrapper"><code>gopro/gpmf-parser</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 有完整文件。包含 FourCC keys <span class="inline-code-wrapper"><code>MINF</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（Model）、<span class="inline-code-wrapper"><code>DVNM</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（DeviceName）、<span class="inline-code-wrapper"><code>FMWR</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（FirmwareVersion）、<span class="inline-code-wrapper"><code>CASN</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（CameraSerialNumber）、<span class="inline-code-wrapper"><code>MUID</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（MediaUniqueID）。來源：<a href="https://github.com/gopro/gpmf-parser">gopro/gpmf-parser</a>、<a href="https://exiftool.org/TagNames/GoPro.html">exiftool GoPro tags</a>。</td>
+</tr>
+<tr>
+<td>MP4 <span class="inline-code-wrapper"><code>udta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>mdta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 內的 <span class="inline-code-wrapper"><code>firmware</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> keys</td>
+<td>檔案內部</td>
+<td style="text-align:center">高</td>
+<td>exiftool／標準 MP4 atom parser 都讀得到（<span class="inline-code-wrapper"><code>com.gopro.firmware</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>com.gopro.serial</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 等 mdta keys，exiftool 的 QuickTime 模組會抽出）。</td>
+</tr>
+</tbody></table>
+<p><strong>結論：</strong> GoPro 是最容易辨識的。不用打開任何檔案，靠 <span class="inline-code-wrapper"><code>DCIM/100GOPRO</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>.LRV</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 就可以證明品牌；<strong>型號字串</strong>從 GPMF 取，是精確值。</p>
+<h3 id="insta360one-x-x2-x3-x4-x5one-rrs-等">Insta360（ONE X / X2 / X3 / X4 / X5、ONE R/RS 等）</h3>
+<blockquote>
+<p>⚠️ <strong>重要前提：副檔名訊號取決於鏡頭模組</strong>。<span class="inline-code-wrapper"><code>.insv</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>.insp</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 是雙魚眼縫合素材專用 — 由 ONE X 系列（X / X2 / X3 / X4 / X5）以及 ONE R / RS <strong>掛上 360° 鏡頭模組</strong>時產生。ONE R / RS 在掛 <strong>4K Wide-Angle Mod</strong>（或其他平面鏡頭模組，例如 1-Inch Wide-Angle、Leica 1-Inch）時，因為是純 2D 拍攝、沒有縫合需求，<strong>只會寫出標準的 <span class="inline-code-wrapper"><code>.mp4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></strong>，卡上不會有 <span class="inline-code-wrapper"><code>.insv</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>.insp</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>。
+來源：使用者於 2026-05-19 的實測回報（ONE / RS + 4K 鏡頭模組）；本評估視為已驗證的觀察點，需要再從 Insta360 文件補一份書面引用。</p>
+</blockquote>
+<table>
+<thead><tr>
+<th>訊號</th>
+<th>位置</th>
+<th style="text-align:center">可靠度</th>
+<th>備註</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>檔名副檔名 <span class="inline-code-wrapper"><code>.insv</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（影片）與 <span class="inline-code-wrapper"><code>.insp</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（照片）</td>
+<td>檔案系統</td>
+<td style="text-align:center"><strong>高 — 但只在 360° 模組</strong></td>
+<td>360° 模組會產生；<strong>平面模組（如 ONE R/RS + 4K Mod）不會有</strong>。Insta360 自家解析工具與 SDK 都吃這個格式（<a href="https://github.com/Insta360Develop/CameraSDK-Cpp">Insta360Develop/CameraSDK-Cpp</a>）。副檔名語意視為「由工具生態確立」，內部格式視為廠商私有。</td>
+</tr>
+<tr>
+<td><span class="inline-code-wrapper"><code>.insv</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 是 MP4 容器（H.264/H.265 in MP4）外加 Insta360 的附加 trailer</td>
+<td>檔案內部</td>
+<td style="text-align:center">中</td>
+<td>標準 MP4 atom 讀取器可以解析 <span class="inline-code-wrapper"><code>moov</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>；型號通常會寫進 <span class="inline-code-wrapper"><code>udta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>mdta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 字串。標記為<strong>部分驗證</strong> — 具體 atom name 隨韌體略有變動。</td>
+</tr>
+<tr>
+<td>配對檔：360° 機型出現 <span class="inline-code-wrapper"><code>VID_..._00_001.insv</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 與 <span class="inline-code-wrapper"><code>..._10_001.insv</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 兩個半邊</td>
+<td>檔案系統</td>
+<td style="text-align:center">高</td>
+<td><span class="inline-code-wrapper"><code>_00_</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>_10_</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 對應兩顆鏡頭，<strong>只</strong>會在 360° 拍攝模式下出現（ONE X 系列固定如此；ONE R / RS 僅在掛 360° 模組時如此）。</td>
+</tr>
+<tr>
+<td>純 <span class="inline-code-wrapper"><code>.mp4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（平面模組產出）內的 MP4 <span class="inline-code-wrapper"><code>udta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>mdta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 與韌體字串</td>
+<td>檔案內部</td>
+<td style="text-align:center">中–高</td>
+<td>平面 2D 模組路徑下，這是品牌與型號<strong>幾乎唯一</strong>的訊號。需要從 <span class="inline-code-wrapper"><code>moov/udta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>moov/meta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（mdta）抽 <span class="inline-code-wrapper"><code>make</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>model</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>firmware</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>，並能識別 Insta360 / Arashi Vision 的字串。<strong>未獨立驗證</strong> — 待用實機檔做 atom dump 補上。</td>
+</tr>
+<tr>
+<td>Insta360 風格的 DCIM 子資料夾命名（例如 <span class="inline-code-wrapper"><code>Camera01</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）</td>
+<td>檔案系統</td>
+<td style="text-align:center">低–中</td>
+<td>命名隨型號與韌體變動；只能當輔助訊號。</td>
+</tr>
+</tbody></table>
+<p><strong>結論：</strong></p>
+<ul>
+<li><strong>掛 360° 模組</strong>（ONE X 全系列；ONE R/RS 掛 360° 模組）：副檔名是非常強的品牌訊號。型號從 <span class="inline-code-wrapper"><code>.insv</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 內的 MP4 metadata atom 抽，或從配對檔 pattern 推「是否 360°」。</li>
+<li><strong>ONE R/RS 掛 4K 或其他平面模組</strong>：副檔名訊號<strong>完全失效</strong>，卡上看起來就是「一張普通 DCF 卡裝著 <span class="inline-code-wrapper"><code>.mp4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>」。<strong>MP4 atom 也抽不到</strong> — ONE RS 的 <span class="inline-code-wrapper"><code>moov/udta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 寫的是 Ambarella SoC 私有的 <span class="inline-code-wrapper"><code>AMBA</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> blob，內部是二進位、沒有公開 schema、僅含 codec 名稱字串（已實機驗證於韌體 v2.0.11_build3）。</li>
+<li>
+<p><strong>替代路徑（已實機驗證）</strong>：Insta360 會在卡上維護一份 <span class="inline-code-wrapper"><code>DCIM/fileinfo_list.list</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（或卡根層），protobuf 格式但容易解析。每個 record 內含三個 ASCII 字串欄位：</p>
+<ul>
+<li>欄位 1（<span class="inline-code-wrapper"><code>0x0a</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）：機身序號（例：<span class="inline-code-wrapper"><code>IRBEN2204WB7GK</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）</li>
+<li>欄位 2（<span class="inline-code-wrapper"><code>0x12</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）：型號（例：<span class="inline-code-wrapper"><code>Insta360 OneRS</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）</li>
+<li>欄位 3（<span class="inline-code-wrapper"><code>0x1a</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）：韌體版本（例：<span class="inline-code-wrapper"><code>v2.0.11_build3</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）</li>
+</ul>
+<p>以這個檔為「Phase 2.5」的訊號源，可以在 ONE RS（即使掛 4K Mod）拿到精確型號與序號，完全繞過 AMBA blob 的逆向。實作見 <a href="../src/filing-poc/insta360probe.py"><span class="inline-code-wrapper"><code>src/filing-poc/insta360probe.py</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></a>。新款 X3／X4 系列上 fileinfo 是否仍是同格式<strong>待驗證</strong>。</p>
+</li>
+</ul>
+<h3 id="dji-osmo-action以及-osmo-pocket-系列但有保留">DJI Osmo Action（以及 Osmo Pocket 系列，但有保留）</h3>
+<table>
+<thead><tr>
+<th>訊號</th>
+<th>位置</th>
+<th style="text-align:center">可靠度</th>
+<th>備註</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>DCIM 子資料夾名 <span class="inline-code-wrapper"><code>DCIM/100MEDIA</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>101MEDIA</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、…</td>
+<td>檔案系統</td>
+<td style="text-align:center">中</td>
+<td><span class="inline-code-wrapper"><code>100MEDIA</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 是非常常見的 DCF 命名，<strong>並非 DJI 獨家</strong> — 一堆無品牌相機、行車記錄器也都這樣命名。只能當輔助訊號。</td>
+</tr>
+<tr>
+<td>檔名前綴 <span class="inline-code-wrapper"><code>DJI_</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>檔案系統</td>
+<td style="text-align:center">高</td>
+<td>例如 <span class="inline-code-wrapper"><code>DJI_0001.MP4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>。Osmo Action 與 Osmo Pocket 系列上是常態。<strong>未從單一 DJI 官方來源直接驗證</strong>；基於跨韌體版本的使用者可見行為廣泛重現。</td>
+</tr>
+<tr>
+<td>與 <span class="inline-code-wrapper"><code>.MP4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 並列的 <span class="inline-code-wrapper"><code>.LRF</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 低解析代理檔</td>
+<td>檔案系統</td>
+<td style="text-align:center">中–高</td>
+<td>Osmo Action 常見；是否出現取決於拍攝模式。</td>
+</tr>
+<tr>
+<td>MP4 <span class="inline-code-wrapper"><code>udta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 字串內含 <span class="inline-code-wrapper"><code>DJI</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 與型號</td>
+<td>檔案內部</td>
+<td style="text-align:center">高</td>
+<td>標準 MP4 atom parser（與 exiftool 的 QuickTime 模組）都讀得到 maker 與 model 字串。</td>
+</tr>
+<tr>
+<td>附帶 <span class="inline-code-wrapper"><code>.SRT</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>.LRF</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> telemetry／代理檔</td>
+<td>檔案系統</td>
+<td style="text-align:center">中</td>
+<td>telemetry SRT 的格式特徵相對 DJI-specific，但主要出現在空拍機素材，而非 Osmo Action。</td>
+</tr>
+</tbody></table>
+<p><strong>結論：</strong> <span class="inline-code-wrapper"><code>DJI_</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 前綴搭配 MP4 metadata 是可靠的。<strong>不要單靠 <span class="inline-code-wrapper"><code>100MEDIA</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 判斷 DJI</strong>。</p>
+<h3 id="sony-action-cam-其他-未知">Sony Action Cam / 其他 / 未知</h3>
+<ul>
+<li>Sony Action Cam 部份模式會寫 <strong>AVCHD</strong> 結構（<span class="inline-code-wrapper"><code>PRIVATE/AVCHD/...</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>） — 結構與 DCF 截然不同，本身就是強指紋。</li>
+<li>雜牌「運動相機」（AKASO、SJCAM、Apeman、…）通常什麼都不寫 — 純 DCF 加上 <span class="inline-code-wrapper"><code>MOV_</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>IMG_</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>100MEDIA</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>，MP4 metadata 裡也不見得會塞品牌字串。這類應該直接歸到 <strong>「未知」</strong>，不要硬猜。</li>
+</ul>
+<h2 id="建議的偵測策略">建議的偵測策略</h2>
+<ol>
+<li><strong>掛載並列舉磁區</strong> — 透過 Android 的 USB host API（<span class="inline-code-wrapper"><code>UsbManager</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）或 Storage Access Framework（<span class="inline-code-wrapper"><code>ACTION_OPEN_DOCUMENT_TREE</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 讓使用者授權整個樹）。Android 原生不開放直接讀取 block device。</li>
+<li>
+<p><strong>第一輪 — 只看檔案系統，不開檔</strong>：</p>
+<ul>
+<li>走訪 <span class="inline-code-wrapper"><code>DCIM/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 一層。</li>
+<li>對訊號打分：<span class="inline-code-wrapper"><code>*GOPRO</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 資料夾、<span class="inline-code-wrapper"><code>GH/GX/GP/GOPR*.MP4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>*.LRV</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>*.THM</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>*.insv</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>*.insp</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>DJI_*.MP4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>*.LRF</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>PRIVATE/AVCHD/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>。</li>
+</ul>
+</li>
+<li>
+<p><strong>第二輪 — 讀 MP4 atom</strong> — 對少量代表性檔案（例如最新的 1–3 個）：</p>
+<ul>
+<li>解析 <span class="inline-code-wrapper"><code>moov/udta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 與 <span class="inline-code-wrapper"><code>moov/meta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（mdta）中的 <span class="inline-code-wrapper"><code>make</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>model</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>firmware</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 字串。</li>
+<li>GoPro 還要進一步定位 <span class="inline-code-wrapper"><code>gpmd</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>-handler 軌道，讀 GPMF（FourCC <span class="inline-code-wrapper"><code>MINF</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>DVNM</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>FMWR</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）。</li>
+</ul>
+</li>
+<li><strong>信心分數</strong> — 把訊號加總成 <span class="inline-code-wrapper"><code>brand</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>model</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 的預測各自帶上信心區間。≥ 2 個獨立印證訊號視為「高」。</li>
+<li><strong>永遠允許 UI 手動覆寫</strong>。</li>
+</ol>
+<h2 id="需要的軟體-驅動程式">需要的軟體 / 驅動程式</h2>
+<table>
+<thead><tr>
+<th>層次</th>
+<th>Android（本專案目標）</th>
+<th>一般 PC</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>Block device 存取</td>
+<td>❌ 沒 root 一般做不到。改用 SAF／USB host。</td>
+<td>OS 原生掛載。</td>
+</tr>
+<tr>
+<td>FAT32 / exFAT 掛載</td>
+<td>由 Android storage stack 自動處理，使用者授權 USB 裝置或文件樹之後即可。Android 14+（<span class="inline-code-wrapper"><code>minSdk = 34</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）保證支援 exFAT。</td>
+<td>原生支援。</td>
+</tr>
+<tr>
+<td>MP4 atom 讀取</td>
+<td>Android 沒內建第一方函式庫可用。選項：自己寫一個小 parser（需要的 atom 不到 100 行），或引用一個 permissive license 的 lib（例如 <span class="inline-code-wrapper"><code>mp4parser</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>isobmff</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）。</td>
+<td>exiftool 全包。</td>
+</tr>
+<tr>
+<td>GPMF 解析</td>
+<td>移植 <a href="https://github.com/gopro/gpmf-parser"><span class="inline-code-wrapper"><code>gopro/gpmf-parser</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></a>（C，雙授權 Apache-2.0 / MIT — 都相容）。只需要品牌／型號相關的 FourCC（<span class="inline-code-wrapper"><code>MINF</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>DVNM</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>FMWR</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>CASN</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>MUID</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>），sensor stream 可略過。</td>
+<td>同上，再加上 exiftool。</td>
+</tr>
+<tr>
+<td>Insta360 <span class="inline-code-wrapper"><code>.insv</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>.insp</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 解析</td>
+<td>對品牌／型號判斷而言，把 MP4 外殼當成一般 MP4 處理即可。<strong>不要</strong>依賴 Insta360 CameraSDK — 那是 USB 控制導向（跟連上的相機對話），跟讀「已經放在磁碟上的卡」無關。</td>
+<td>Insta360 Studio 可做完整 demux。</td>
+</tr>
+</tbody></table>
+<h2 id="限制與風險">限制與風險</h2>
+<ol>
+<li><strong>使用者改過的卡。</strong> 如果使用者在 PC 上動過檔案結構或重新命名，檔案系統線索就不可靠。MP4 metadata 在「複製」時會留下，但「轉檔／剪輯」之後就掉了。</li>
+<li><strong>雜牌與白牌相機。</strong> 通常只有通用 DCF、MP4 也沒寫品牌字串。要規劃「未知」這個結果。</li>
+<li><strong>舊韌體與模組化機身。</strong> GPMF 在 HERO 4 以前覆蓋不全；Insta360 ONE（一代）少了後期的部分 metadata 約定。Insta360 ONE R / RS 的指紋會<strong>隨換上的鏡頭模組變動</strong> — 360° 模組產生 <span class="inline-code-wrapper"><code>.insv</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>.insp</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>，平面模組（4K Mod、1-Inch Wide-Angle、Leica 1-Inch …）只產生 <span class="inline-code-wrapper"><code>.mp4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>，這時必須回頭看 MP4 內部 metadata。不確定就退回看 atom 字串，再退而求其次讓使用者覆寫。</li>
+<li><strong>同一張卡用在兩台相機。</strong> <span class="inline-code-wrapper"><code>DCIM/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 底下可能多個子資料夾、各自帶不同品牌訊號。要做到逐資料夾或逐檔判斷，而不是整張卡只給一個答案。</li>
+<li><strong>DCIM 資料夾撞名。</strong> <span class="inline-code-wrapper"><code>100MEDIA</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 太通用，不能單憑這個就判 DJI。</li>
+<li><strong>個資。</strong> <span class="inline-code-wrapper"><code>CASN</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（Camera Serial Number）與 <span class="inline-code-wrapper"><code>MUID</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（Media Unique ID）是裝置身份識別。沒拿到使用者明確同意之前，不要寫 log、也不要傳出裝置。</li>
+<li><strong>Android 儲存權限。</strong> Android 14+ 之後，廣義的 <span class="inline-code-wrapper"><code>READ_EXTERNAL_STORAGE</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 已經拿不到想要的東西；要走 SAF 樹 URI 流程，或透過 <span class="inline-code-wrapper"><code>UsbManager</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 取得特定裝置授權。權限 UX 要在開發初期就規劃。</li>
+<li><strong>驅動程式。</strong> 讀「卡」本身<strong>不需要</strong>廠商驅動 — 就是一張普通的 FAT/exFAT mass-storage 裝置。廠商 SDK（GoPro OpenGoPro、Insta360 CameraSDK）做的是透過 USB 或 Wi-Fi 跟<em>相機</em>對話，不是讀 SD 卡，這裡用不到。</li>
+</ol>
+<h2 id="給-action-camera-drain-的建議落地路徑">給 Action Camera Drain 的建議落地路徑</h2>
+<ul>
+<li><strong>Phase 1 — 廉價、可直接出貨。</strong> 只看檔案系統做品牌判斷（資料夾名／檔名前綴）。對於設定預設上傳目錄與套用 GoPro／Insta360／DJI 擷取預設值已經夠用。UI 上要顯示信心。</li>
+<li><strong>Phase 2 — 漸進。</strong> 對每個偵測到的資料夾，打開一支 MP4，讀 <span class="inline-code-wrapper"><code>moov/udta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>moov/meta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 的 <span class="inline-code-wrapper"><code>make</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>model</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>。能拉到型號級的準確度。</li>
+<li><strong>Phase 3 — 必要時才做。</strong> 移植 GPMF 中跟品牌／型號相關的子集到 GoPro，抓 <span class="inline-code-wrapper"><code>MINF</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（精確型號）與 <span class="inline-code-wrapper"><code>FMWR</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（韌體）。sensor stream 不做。</li>
+<li><strong>絕不</strong>只靠單一訊號；<strong>永遠</strong>留手動覆寫。</li>
+</ul>
+<h2 id="測試-驗證計畫">測試 / 驗證計畫</h2>
+<ul>
+<li>蒐集一份已知樣本：GoPro HERO 9/10/11/12/13、Insta360 ONE X2/X3/X4（360° 模式）、<strong>Insta360 ONE R / RS 配 360° 模組與 4K 平面模組各一組</strong>、DJI Osmo Action 3/4/5、外加一台無品牌（AKASO 等級）。</li>
+<li>每一台記錄：最上層 layout、DCIM 子資料夾、副檔名、MP4 atom dump（例如 <span class="inline-code-wrapper"><code>exiftool -G -a</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 輸出）、有 GPMF 的話也 dump 一份。</li>
+<li>把樣本固定在 <span class="inline-code-wrapper"><code>src/android/app/src/test/resources/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（或類似位置），對偵測器寫單元測試，逐一比對。</li>
+<li>每筆驗證結果以一條獨立紀錄列管，逐步把上方標 <strong>未驗證</strong> 的條目換掉。</li>
+</ul>
+<h2 id="rollback-計畫">Rollback 計畫</h2>
+<ul>
+<li>偵測功能放在單一 feature flag 後面；上傳主流程必須在 <span class="inline-code-wrapper"><code>brand = Unknown</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>model = Unknown</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 的情況下也能完整運作。偵測一旦出問題就 fallback 到這條路徑，UI 顯示手動品牌選擇器。</li>
+</ul>
+<h2 id="後續-todo">後續 / TODO</h2>
+<ul class="contains-task-list">
+<li class="task-list-item"><input type="checkbox" disabled> 對 community.gopro.com 上的權威頁面驗證 GoPro 檔名前綴（<span class="inline-code-wrapper"><code>GH</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>GX</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>GP</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>GS</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）語意 — 本次評估時打不開。</li>
+<li class="task-list-item"><input type="checkbox" disabled> 對 <span class="inline-code-wrapper"><code>onlinehelp.insta360.com</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>www.insta360.com/support</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 驗證 Insta360 <span class="inline-code-wrapper"><code>.insv</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>.insp</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 副檔名語意 — 本次評估時無回應；目前的描述是根據官方 SDK 與廣為採用的第三方工具推得。</li>
+<li class="task-list-item"><input type="checkbox" disabled checked> <del>對 Insta360 ONE R / RS + 4K Mod（以及其他平面模組）做實機 atom dump，確認 <span class="inline-code-wrapper"><code>moov/udta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>moov/meta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 內可用於判斷品牌／型號的字串</del> — 已實機驗證（2026-05-19）：ONE RS 在 v2.0.11_build3 韌體下，<span class="inline-code-wrapper"><code>moov/udta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 內僅有 <span class="inline-code-wrapper"><code>AMBA</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 私有 blob，無 Apple <span class="inline-code-wrapper"><code>©mak/©mod/©swr</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 或 <span class="inline-code-wrapper"><code>meta/mdta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>。改用 <span class="inline-code-wrapper"><code>DCIM/fileinfo_list.list</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 取得型號／序號／韌體，行得通。</li>
+<li class="task-list-item"><input type="checkbox" disabled> 對 Insta360 X3 / X4 / X5 系列驗證 <span class="inline-code-wrapper"><code>fileinfo_list.list</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 是否同 schema、欄位編號（serial=1, model=2, firmware=3）是否一致。</li>
+<li class="task-list-item"><input type="checkbox" disabled> 對最新的 DJI 支援頁驗證 Osmo Action 檔名 pattern。</li>
+<li class="task-list-item"><input type="checkbox" disabled> Spike：用 Kotlin 寫一個最小化的 MP4 <span class="inline-code-wrapper"><code>udta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>mdta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 讀取器，量在 100 MB+ 檔案上的成本（只需要前幾 KB 與 <span class="inline-code-wrapper"><code>moov</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> atom）。</li>
+<li class="task-list-item"><input type="checkbox" disabled> 決策：要 vendor 一小段 <span class="inline-code-wrapper"><code>gpmf-parser</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（C → JNI），還是用 Kotlin 重寫 FourCC scan。</li>
+</ul>
+
+</main>
+
+<script>
+// Storage may be disabled (data: URLs, sandboxed iframes). Wrap accesses to fail-safe.
+var safeStorage = {
+  get: function(k) { try { return localStorage.getItem(k); } catch (_) { return null; } },
+  set: function(k, v) { try { localStorage.setItem(k, v); } catch (_) { /* swallow */ } }
+};
+// Copy 功能
+function copyCode(btn) {
+  const code = btn.parentElement.querySelector('code');
+  navigator.clipboard.writeText(code.textContent).then(function() {
+    btn.textContent = 'Copied!';
+    setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
+  });
+}
+function copyInlineCode(btn) {
+  const code = btn.parentElement.querySelector('code');
+  navigator.clipboard.writeText(code.textContent).then(function() {
+    btn.textContent = 'Copied!';
+    setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
+  });
+}
+
+// Lightbox 功能
+function openLightbox(img) {
+  // 若 img 上層直接是 <span>（例如 animation-maker 的 wrapper），
+  // 就以 span 為錨定來源並 cloneNode(true) — 保留 data-* 屬性與內部結構，
+  // 讓掛在 wrapper 上的 overlay（例如動畫追蹤）能在燈箱中持續錨定。
+  var anchor = (img.parentElement && img.parentElement.tagName === 'SPAN')
+    ? img.parentElement
+    : img;
+  var rect = anchor.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    anchor = img;
+    rect = img.getBoundingClientRect();
+  }
+
+  var overlay = document.createElement('div');
+  overlay.className = 'lightbox-overlay';
+
+  var clone;
+  if (anchor === img) {
+    clone = document.createElement('img');
+    clone.src = img.src;
+    clone.alt = img.alt;
+  } else {
+    clone = anchor.cloneNode(true);
+    // 移除可能殘留的內部互動腳本/控制（cloneNode 會帶 onclick 等屬性）
+    var innerImg = clone.querySelector('img');
+    if (innerImg) {
+      innerImg.removeAttribute('onclick');
+    }
+  }
+  // 起始位置：原始錨定元素位置
+  clone.style.top = rect.top + 'px';
+  clone.style.left = rect.left + 'px';
+  clone.style.width = rect.width + 'px';
+  clone.style.height = rect.height + 'px';
+  overlay.appendChild(clone);
+  document.body.appendChild(overlay);
+  // 觸發放大動畫
+  requestAnimationFrame(function() {
+    overlay.classList.add('active');
+    // 計算置中目標位置
+    var vw = window.innerWidth * 0.9;
+    var vh = window.innerHeight * 0.9;
+    var naturalW = img.naturalWidth || rect.width;
+    var naturalH = img.naturalHeight || rect.height;
+    var scale = Math.min(vw / naturalW, vh / naturalH, 1);
+    var finalW = naturalW * scale;
+    var finalH = naturalH * scale;
+    var finalTop = (window.innerHeight - finalH) / 2;
+    var finalLeft = (window.innerWidth - finalW) / 2;
+    clone.style.top = finalTop + 'px';
+    clone.style.left = finalLeft + 'px';
+    clone.style.width = finalW + 'px';
+    clone.style.height = finalH + 'px';
+  });
+  // 關閉 lightbox：縮回錨定元素的當前位置
+  function closeLightbox() {
+    var currentRect = anchor.getBoundingClientRect();
+    clone.style.top = currentRect.top + 'px';
+    clone.style.left = currentRect.left + 'px';
+    clone.style.width = currentRect.width + 'px';
+    clone.style.height = currentRect.height + 'px';
+    overlay.classList.remove('active');
+    setTimeout(function() {
+      overlay.remove();
+    }, 300);
+  }
+  overlay.addEventListener('click', closeLightbox);
+}
+
+// Sidebar collapse/expand
+(function() {
+  var sidebar = document.getElementById('sidebar');
+  var btn = document.getElementById('sidebarCollapseBtn');
+  var mobileBtn = document.getElementById('mobileExpandBtn');
+  var smallMq = window.matchMedia('(max-width: 900px)');
+  // Track viewport breakpoint live. Initial value may be unreliable when this
+  // document is loaded inside a hidden iframe (display:none) — the listener
+  // updates isSmall whenever the iframe later becomes visible at full size.
+  var isSmall = smallMq.matches;
+  try { smallMq.addEventListener('change', function(e) { isSmall = e.matches; applyState(); }); }
+  catch (_) { try { smallMq.addListener(function(e) { isSmall = e.matches; applyState(); }); } catch (__) {} }
+
+  var saved = safeStorage.get('sidebar-collapsed');
+  var collapsed;
+
+  if (saved !== null) {
+    collapsed = saved === 'true';
+  } else {
+    collapsed = isSmall;
+  }
+
+  function applyState() {
+    if (collapsed) {
+      sidebar.classList.add('sidebar-collapsed');
+      sidebar.classList.remove('sidebar-expanded');
+      document.body.classList.add('sidebar-is-collapsed');
+      btn.textContent = '»';
+      btn.title = '展開側欄';
+    } else {
+      sidebar.classList.remove('sidebar-collapsed');
+      sidebar.classList.add('sidebar-expanded');
+      document.body.classList.remove('sidebar-is-collapsed');
+      btn.textContent = '«';
+      btn.title = '收合側欄';
+    }
+    if (mobileBtn) {
+      mobileBtn.style.display = (isSmall && collapsed) ? 'block' : 'none';
+    }
+  }
+
+  applyState();
+
+  btn.addEventListener('click', function() {
+    collapsed = !collapsed;
+    safeStorage.set('sidebar-collapsed', collapsed);
+    applyState();
+  });
+
+  if (mobileBtn) {
+    mobileBtn.addEventListener('click', function() {
+      collapsed = false;
+      safeStorage.set('sidebar-collapsed', collapsed);
+      applyState();
+    });
+  }
+
+  // On small screens, collapse sidebar when a TOC link is clicked.
+  // Read the breakpoint live to handle the case where this script ran while
+  // the iframe was hidden (so the cached isSmall would have been stale).
+  sidebar.querySelectorAll('a[data-target]').forEach(function(link) {
+    link.addEventListener('click', function() {
+      if (smallMq.matches && !collapsed) {
+        collapsed = true;
+        safeStorage.set('sidebar-collapsed', collapsed);
+        applyState();
+      }
+    });
+  });
+})();
+
+// Theme switcher
+(function() {
+  var root = document.documentElement;
+  var buttons = document.querySelectorAll('.theme-option');
+  var mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+  function applyTheme(mode) {
+    if (mode === 'auto') {
+      root.setAttribute('data-theme', mediaQuery.matches ? 'dark' : 'light');
+    } else {
+      root.setAttribute('data-theme', mode);
+    }
+    buttons.forEach(function(btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-theme') === mode);
+    });
+  }
+
+  // Restore saved preference or default to auto
+  var saved = safeStorage.get('theme') || 'auto';
+  applyTheme(saved);
+
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var mode = btn.getAttribute('data-theme');
+      safeStorage.set('theme', mode);
+      applyTheme(mode);
+    });
+  });
+
+  // Listen for device theme changes when in auto mode
+  mediaQuery.addEventListener('change', function() {
+    if ((safeStorage.get('theme') || 'auto') === 'auto') {
+      applyTheme('auto');
+    }
+  });
+})();
+
+// Scroll Spy
+(function() {
+  const links = document.querySelectorAll('nav.sidebar a[data-target]');
+  const sections = [];
+  links.forEach(link => {
+    const id = link.getAttribute('data-target');
+    const el = document.getElementById(id);
+    if (el) sections.push({ link, el });
+  });
+
+  function updateActive() {
+    let current = null;
+    const scrollY = window.scrollY + 60;
+    for (let i = sections.length - 1; i >= 0; i--) {
+      if (sections[i].el.offsetTop <= scrollY) {
+        current = sections[i];
+        break;
+      }
+    }
+    links.forEach(l => l.classList.remove('active'));
+    if (current) {
+      current.link.classList.add('active');
+      current.link.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
+
+  let ticking = false;
+  window.addEventListener('scroll', () => {
+    if (!ticking) {
+      requestAnimationFrame(() => { updateActive(); ticking = false; });
+      ticking = true;
+    }
+  });
+  updateActive();
+})();
+
+// Presentation mode (reveal.js)
+(function() {
+  var overlay = document.getElementById('presentationOverlay');
+  var closeBtn = document.getElementById('presentationClose');
+  var slidesBtn = document.getElementById('slidesBtn');
+  var revealScriptLoaded = false;
+  var revealInstance = null;
+
+  function buildSlides(slidesContainer) {
+    var content = document.querySelector('main.content');
+    var children = Array.from(content.children);
+
+    // Detect deepest heading level present
+    var hasH1 = children.some(function(el) { return el.tagName === 'H1'; });
+    var hasH2 = children.some(function(el) { return el.tagName === 'H2'; });
+    var hasH3 = children.some(function(el) { return el.tagName === 'H3'; });
+
+    if (!hasH1) {
+      // No headings — single slide
+      var sec = document.createElement('section');
+      children.forEach(function(el) { sec.appendChild(el.cloneNode(true)); });
+      slidesContainer.appendChild(sec);
+      return;
+    }
+
+    if (hasH1 && !hasH2 && !hasH3) {
+      // H1 only mode: each H1 + content = one slide
+      var currentSlide = null;
+      children.forEach(function(el) {
+        if (el.tagName === 'H1') {
+          if (currentSlide) slidesContainer.appendChild(currentSlide);
+          currentSlide = document.createElement('section');
+          currentSlide.appendChild(el.cloneNode(true));
+        } else if (currentSlide) {
+          currentSlide.appendChild(el.cloneNode(true));
+        }
+      });
+      if (currentSlide) slidesContainer.appendChild(currentSlide);
+
+    } else if (hasH1 && hasH2 && !hasH3) {
+      // H1+H2 mode: H1 = horizontal section, H2 = vertical slides
+      var h1Sec = null, h2Slide = null;
+      children.forEach(function(el) {
+        if (el.tagName === 'H1') {
+          if (h2Slide && h1Sec) h1Sec.appendChild(h2Slide);
+          h2Slide = null;
+          if (h1Sec) slidesContainer.appendChild(h1Sec);
+          h1Sec = document.createElement('section');
+          var title = document.createElement('section');
+          title.appendChild(el.cloneNode(true));
+          h1Sec.appendChild(title);
+        } else if (el.tagName === 'H2' && h1Sec) {
+          if (h2Slide) h1Sec.appendChild(h2Slide);
+          h2Slide = document.createElement('section');
+          h2Slide.appendChild(el.cloneNode(true));
+        } else {
+          if (h2Slide) {
+            h2Slide.appendChild(el.cloneNode(true));
+          } else if (h1Sec) {
+            h1Sec.lastElementChild.appendChild(el.cloneNode(true));
+          }
+        }
+      });
+      if (h2Slide && h1Sec) h1Sec.appendChild(h2Slide);
+      if (h1Sec) slidesContainer.appendChild(h1Sec);
+
+    } else {
+      // H1+H2+H3 mode: H1 = horizontal section, H2/H3 = flat vertical slides
+      // reveal.js only supports 2 levels, so H2 and H3 are both vertical slides under H1
+      var h1Sec = null, currentSlide = null;
+      children.forEach(function(el) {
+        if (el.tagName === 'H1') {
+          if (currentSlide && h1Sec) h1Sec.appendChild(currentSlide);
+          currentSlide = null;
+          if (h1Sec) slidesContainer.appendChild(h1Sec);
+          h1Sec = document.createElement('section');
+          var title = document.createElement('section');
+          title.appendChild(el.cloneNode(true));
+          h1Sec.appendChild(title);
+        } else if ((el.tagName === 'H2' || el.tagName === 'H3') && h1Sec) {
+          if (currentSlide) h1Sec.appendChild(currentSlide);
+          currentSlide = document.createElement('section');
+          currentSlide.appendChild(el.cloneNode(true));
+        } else {
+          if (currentSlide) {
+            currentSlide.appendChild(el.cloneNode(true));
+          } else if (h1Sec) {
+            h1Sec.lastElementChild.appendChild(el.cloneNode(true));
+          }
+        }
+      });
+      if (currentSlide && h1Sec) h1Sec.appendChild(currentSlide);
+      if (h1Sec) slidesContainer.appendChild(h1Sec);
+    }
+  }
+
+  function getCurrentTheme() {
+    var t = document.documentElement.getAttribute('data-theme');
+    if (t === 'dark') return 'dark';
+    if (t === 'light') return 'light';
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+
+  function ensureRevealCSS() {
+    if (!document.getElementById('reveal-css')) {
+      var link = document.createElement('link');
+      link.id = 'reveal-css';
+      link.rel = 'stylesheet';
+      link.href = 'https://unpkg.com/reveal.js@5/dist/reveal.css';
+      document.head.appendChild(link);
+    }
+    // Update theme each time
+    var isDark = getCurrentTheme() === 'dark';
+    var existing = document.getElementById('reveal-theme');
+    var newHref = isDark
+      ? 'https://unpkg.com/reveal.js@5/dist/theme/night.css'
+      : 'https://unpkg.com/reveal.js@5/dist/theme/white.css';
+    if (existing) {
+      existing.href = newHref;
+    } else {
+      var theme = document.createElement('link');
+      theme.id = 'reveal-theme';
+      theme.rel = 'stylesheet';
+      theme.href = newHref;
+      document.head.appendChild(theme);
+    }
+  }
+
+  function createRevealDOM() {
+    // Recreate fresh .reveal container each time to avoid stale state
+    overlay.innerHTML = '';
+    var revealDiv = document.createElement('div');
+    revealDiv.className = 'reveal';
+    revealDiv.style.width = '100%';
+    revealDiv.style.height = '100%';
+    var slidesDiv = document.createElement('div');
+    slidesDiv.className = 'slides';
+    revealDiv.appendChild(slidesDiv);
+    overlay.appendChild(revealDiv);
+    return { revealDiv: revealDiv, slidesDiv: slidesDiv };
+  }
+
+  function initReveal(revealDiv) {
+    revealDiv.style.visibility = 'hidden';
+    revealInstance = new Reveal(revealDiv, {
+      hash: false, history: false, transition: 'slide',
+      width: 1280, height: 720, margin: 0.04,
+      center: true, embedded: false,
+      controls: true, controlsLayout: 'bottom-right',
+      keyboard: {
+        87: 'up',    // W
+        65: 'left',  // A
+        83: 'down',  // S
+        68: 'right'  // D
+      }
+    });
+    revealInstance.initialize().then(function() {
+      revealDiv.style.visibility = '';
+      var spinner = overlay.querySelector('.presentation-loading');
+      if (spinner) spinner.remove();
+    });
+  }
+
+  function openPresentation() {
+    ensureRevealCSS();
+    var dom = createRevealDOM();
+    buildSlides(dom.slidesDiv);
+    var isDark = getCurrentTheme() === 'dark';
+    overlay.style.background = isDark ? '#191919' : '#fff';
+    // Show loading spinner
+    var spinner = document.createElement('div');
+    spinner.className = 'presentation-loading';
+    overlay.appendChild(spinner);
+    overlay.classList.add('active');
+    closeBtn.style.display = 'flex';
+    closeBtn.style.color = isDark ? '#fff' : '#333';
+    document.body.style.overflow = 'hidden';
+
+    if (revealScriptLoaded) {
+      initReveal(dom.revealDiv);
+      return;
+    }
+
+    var script = document.createElement('script');
+    script.src = 'https://unpkg.com/reveal.js@5/dist/reveal.js';
+    script.onload = function() {
+      revealScriptLoaded = true;
+      initReveal(dom.revealDiv);
+    };
+    document.head.appendChild(script);
+  }
+
+  function closePresentation() {
+    laserDot.style.display = 'none';
+    overlay.classList.remove('active');
+    closeBtn.style.display = 'none';
+    document.body.style.overflow = '';
+    if (revealInstance) {
+      try { revealInstance.destroy(); } catch(e) {}
+      revealInstance = null;
+    }
+    overlay.innerHTML = '';
+  }
+
+  slidesBtn.addEventListener('click', openPresentation);
+  closeBtn.addEventListener('click', closePresentation);
+
+  // Laser dot pointer
+  var laserDot = document.getElementById('laserDot');
+  document.addEventListener('mousemove', function(e) {
+    if (!overlay.classList.contains('active')) return;
+    laserDot.style.left = e.clientX + 'px';
+    laserDot.style.top = e.clientY + 'px';
+    laserDot.style.display = 'block';
+  });
+  overlay.addEventListener('mouseleave', function() {
+    laserDot.style.display = 'none';
+  });
+
+  // Hotkeys: F5 or Cmd/Ctrl+Enter to open, ESC to close
+  window.addEventListener('keydown', function(e) {
+    var isPresenting = overlay.classList.contains('active');
+    if (!isPresenting) {
+      var f5 = e.keyCode === 116;
+      var cmdEnter = e.key === 'Enter' && (e.metaKey || e.ctrlKey);
+      if (f5 || cmdEnter) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        openPresentation();
+        return;
+      }
+    }
+    if (e.key === 'Escape' && isPresenting) {
+      e.stopImmediatePropagation();
+      closePresentation();
+    }
+  }, true);
+})();
+</script>
+</body>
+</html>

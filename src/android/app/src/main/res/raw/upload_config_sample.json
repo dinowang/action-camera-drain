@@ -1,0 +1,16 @@
+{
+  "type": "AzureBlob",
+  "id": "default",
+  "label": "Azure Blob Storage (default)",
+  "accountUrl": "https://<account>.blob.core.windows.net",
+  "container": "ingest",
+  "auth": {
+    "type": "sas",
+    "sasToken": "?sv=...&sig=..."
+  },
+  "_alt_auth_example": {
+    "type": "connectionString",
+    "connectionString": "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net"
+  }
+}
+

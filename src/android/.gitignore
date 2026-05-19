@@ -204,3 +204,6 @@ fabric.properties
 .externalNativeBuild
 .cxx
 local.properties
+
+# Action Camera  real upload config (contains SAS / connection string)Drain 
+app/src/main/res/raw/upload_config.json

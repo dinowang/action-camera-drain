@@ -5,9 +5,11 @@
             "path": "."
         },
         {
-            "name": "Android",
+            "name": "🤖 Android",
             "path": "src/android"
         }
     ],
-    "settings": {}
+    "settings": {
+        "java.configuration.updateBuildConfiguration": "interactive"
+    }
 }

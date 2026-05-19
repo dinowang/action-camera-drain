@@ -1,0 +1,1911 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>記憶卡內容歸檔邏輯：以裝置為單位上傳到 Azure Blob Storage | flash-filing-logic</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='6' y='2' width='20' height='28' rx='2' fill='%23fff' stroke='%230078d4' stroke-width='2'/><line x1='10' y1='10' x2='22' y2='10' stroke='%230078d4' stroke-width='1.5' stroke-linecap='round'/><line x1='10' y1='15' x2='22' y2='15' stroke='%23b0b0b0' stroke-width='1.5' stroke-linecap='round'/><line x1='10' y1='20' x2='18' y2='20' stroke='%23b0b0b0' stroke-width='1.5' stroke-linecap='round'/></svg>">
+<meta name="description" content="Action Camera Drain 將記憶卡內容上傳到 Azure Blob 時，如何辨識來源裝置、決定目的路徑、處理衝突的判斷流程；無法辨識的一律歸到 unknown，不嘗試處理罕見的卡片交換情境。">
+<meta name="author" content="dinowang">
+<meta name="keywords" content="Azure Blob Storage, 歸檔, 運動相機, GoPro, Insta360, DJI, MP4 metadata, GPMF, 裝置辨識, 上傳">
+<script>
+// Apply theme early to prevent flash of wrong theme
+(function(){var t=(function(){try{return localStorage.getItem('theme')}catch(_){return null}})()||'auto';var d=t==='auto'?window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light':t;document.documentElement.setAttribute('data-theme',d)})();
+</script>
+<style>
+:root {
+  --sidebar-width: 300px;
+  --bg-sidebar: #f8f9fa;
+  --bg-main: #ffffff;
+  --border-color: #dee2e6;
+  --accent: #0078d4;
+  --accent-bg: #e8f4fd;
+  --text: #212529;
+  --text-muted: #6c757d;
+  --code-bg: #f4f4f4;
+  --code-block-bg: #f6f8fa;
+  --code-block-text: #24292e;
+  --table-header-bg: #f1f3f5;
+  --table-stripe-bg: #fafbfc;
+  --blockquote-bg: #f8f9fa;
+  --blockquote-text: #495057;
+  --sidebar-hover: #e9ecef;
+  --sidebar-scrollbar: #ccc;
+  --lightbox-bg: rgba(0,0,0,0.7);
+  --copy-btn-bg: #f0f0f0;
+  --link-color: #0078d4;
+  --link-visited: #68217a;
+}
+:root[data-theme="dark"] {
+  --bg-sidebar: #1e1e1e;
+  --bg-main: #181818;
+  --border-color: #3a3a3a;
+  --accent: #4da6ff;
+  --accent-bg: #1a2e40;
+  --text: #d4d4d4;
+  --text-muted: #888;
+  --code-bg: #2d2d2d;
+  --code-block-bg: #0d0d0d;
+  --code-block-text: #d4d4d4;
+  --table-header-bg: #2a2a2a;
+  --table-stripe-bg: #1f1f1f;
+  --blockquote-bg: #222;
+  --blockquote-text: #aaa;
+  --sidebar-hover: #2a2a2a;
+  --sidebar-scrollbar: #555;
+  --lightbox-bg: rgba(0,0,0,0.85);
+  --copy-btn-bg: #333;
+  --link-color: #6cb6ff;
+  --link-visited: #d2a8ff;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 20px; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans TC", sans-serif;
+  color: var(--text);
+  background: var(--bg-main);
+  line-height: 1.7;
+  display: flex;
+  min-height: 100vh;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+/* Sidebar */
+nav.sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: var(--sidebar-width);
+  overflow: hidden;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-color);
+  padding: 20px 0 0;
+  z-index: 100;
+  scrollbar-width: thin;
+  display: flex;
+  flex-direction: column;
+  transition: width 0.25s ease, min-width 0.25s ease;
+}
+nav.sidebar .toc-links {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+  padding-bottom: 8px;
+  scrollbar-width: thin;
+}
+nav.sidebar::-webkit-scrollbar { width: 0; }
+nav.sidebar::-webkit-scrollbar-thumb { background: var(--sidebar-scrollbar); border-radius: 2px; }
+nav.sidebar .toc-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 0 16px 12px;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.toc-title-text { flex: 1; }
+.sidebar-collapse-btn {
+  border: none; background: transparent; color: var(--text-muted);
+  font-size: 16px; cursor: pointer; padding: 0 4px; line-height: 1;
+  transition: color 0.15s ease; flex-shrink: 0;
+}
+.sidebar-collapse-btn:hover { color: var(--text); }
+nav.sidebar a {
+  display: block;
+  text-decoration: none;
+  color: var(--text);
+  padding: 5px 16px;
+  font-size: 13px;
+  border-left: 3px solid transparent;
+  transition: all 0.15s ease;
+}
+nav.sidebar a.toc-h3 { padding-left: 32px; font-size: 12px; color: var(--text-muted); }
+nav.sidebar a:hover { background: var(--sidebar-hover); color: var(--accent); }
+nav.sidebar a.active {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-left-color: var(--accent);
+  font-weight: 600;
+}
+nav.sidebar a.active.toc-h3 { font-weight: 500; }
+.toc-links::-webkit-scrollbar { width: 4px; }
+.toc-links::-webkit-scrollbar-thumb { background: var(--sidebar-scrollbar); border-radius: 2px; }
+
+/* Main content */
+main.content {
+  margin-left: var(--sidebar-width);
+  flex: 1;
+  max-width: 900px;
+  padding: 40px 48px 80px;
+  overflow-x: hidden;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  transition: margin-left 0.25s ease;
+}
+main.content h1 { font-size: 2em; margin: 0 0 16px; padding-bottom: 10px; border-bottom: 2px solid var(--accent); }
+main.content h2 { font-size: 1.5em; margin: 40px 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color); color: var(--accent); }
+main.content h3 { font-size: 1.2em; margin: 28px 0 12px; }
+main.content h4 { font-size: 1.05em; margin: 20px 0 8px; }
+main.content p { margin: 0 0 12px; }
+main.content ul, main.content ol { margin: 0 0 12px; padding-left: 28px; }
+main.content li { margin-bottom: 4px; }
+main.content hr { border: none; border-top: 1px solid var(--border-color); margin: 32px 0; }
+
+main.content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0 16px;
+  font-size: 14px;
+}
+main.content th, main.content td {
+  border: 1px solid var(--border-color);
+  padding: 8px 12px;
+  text-align: left;
+}
+main.content th { background: var(--table-header-bg); font-weight: 600; }
+main.content tr:nth-child(even) { background: var(--table-stripe-bg); }
+
+main.content code {
+  background: var(--code-bg);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.9em;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+main.content pre {
+  background: var(--code-block-bg);
+  color: var(--code-block-text);
+  padding: 16px 20px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 12px 0 16px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+main.content pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+/* highlight.js syntax highlighting — GitHub Light theme */
+pre code .hljs-doctag,
+pre code .hljs-keyword,
+pre code .hljs-meta .hljs-keyword,
+pre code .hljs-template-tag,
+pre code .hljs-template-variable,
+pre code .hljs-type,
+pre code .hljs-variable.language_ { color: #d73a49; }
+pre code .hljs-title,
+pre code .hljs-title.class_,
+pre code .hljs-title.class_.inherited__,
+pre code .hljs-title.function_ { color: #6f42c1; }
+pre code .hljs-attr,
+pre code .hljs-attribute,
+pre code .hljs-literal,
+pre code .hljs-meta,
+pre code .hljs-number,
+pre code .hljs-operator,
+pre code .hljs-selector-attr,
+pre code .hljs-selector-class,
+pre code .hljs-selector-id,
+pre code .hljs-variable { color: #005cc5; }
+pre code .hljs-meta .hljs-string,
+pre code .hljs-regexp,
+pre code .hljs-string { color: #032f62; }
+pre code .hljs-built_in,
+pre code .hljs-symbol { color: #e36209; }
+pre code .hljs-code,
+pre code .hljs-comment,
+pre code .hljs-formula { color: #6a737d; }
+pre code .hljs-name,
+pre code .hljs-quote,
+pre code .hljs-selector-pseudo,
+pre code .hljs-selector-tag { color: #22863a; }
+pre code .hljs-subst { color: #24292e; }
+pre code .hljs-section { color: #005cc5; font-weight: 700; }
+pre code .hljs-bullet { color: #735c0f; }
+pre code .hljs-emphasis { font-style: italic; }
+pre code .hljs-strong { font-weight: 700; }
+pre code .hljs-addition { color: #22863a; background-color: #f0fff4; }
+pre code .hljs-deletion { color: #b31d28; background-color: #ffeef0; }
+/* highlight.js syntax highlighting — GitHub Dark theme */
+[data-theme="dark"] pre code .hljs-doctag,
+[data-theme="dark"] pre code .hljs-keyword,
+[data-theme="dark"] pre code .hljs-meta .hljs-keyword,
+[data-theme="dark"] pre code .hljs-template-tag,
+[data-theme="dark"] pre code .hljs-template-variable,
+[data-theme="dark"] pre code .hljs-type,
+[data-theme="dark"] pre code .hljs-variable.language_ { color: #ff7b72; }
+[data-theme="dark"] pre code .hljs-title,
+[data-theme="dark"] pre code .hljs-title.class_,
+[data-theme="dark"] pre code .hljs-title.class_.inherited__,
+[data-theme="dark"] pre code .hljs-title.function_ { color: #d2a8ff; }
+[data-theme="dark"] pre code .hljs-attr,
+[data-theme="dark"] pre code .hljs-attribute,
+[data-theme="dark"] pre code .hljs-literal,
+[data-theme="dark"] pre code .hljs-meta,
+[data-theme="dark"] pre code .hljs-number,
+[data-theme="dark"] pre code .hljs-operator,
+[data-theme="dark"] pre code .hljs-selector-attr,
+[data-theme="dark"] pre code .hljs-selector-class,
+[data-theme="dark"] pre code .hljs-selector-id,
+[data-theme="dark"] pre code .hljs-variable { color: #79c0ff; }
+[data-theme="dark"] pre code .hljs-meta .hljs-string,
+[data-theme="dark"] pre code .hljs-regexp,
+[data-theme="dark"] pre code .hljs-string { color: #a5d6ff; }
+[data-theme="dark"] pre code .hljs-built_in,
+[data-theme="dark"] pre code .hljs-symbol { color: #ffa657; }
+[data-theme="dark"] pre code .hljs-code,
+[data-theme="dark"] pre code .hljs-comment,
+[data-theme="dark"] pre code .hljs-formula { color: #8b949e; }
+[data-theme="dark"] pre code .hljs-name,
+[data-theme="dark"] pre code .hljs-quote,
+[data-theme="dark"] pre code .hljs-selector-pseudo,
+[data-theme="dark"] pre code .hljs-selector-tag { color: #7ee787; }
+[data-theme="dark"] pre code .hljs-subst { color: #c9d1d9; }
+[data-theme="dark"] pre code .hljs-section { color: #1f6feb; font-weight: 700; }
+[data-theme="dark"] pre code .hljs-bullet { color: #f2cc60; }
+[data-theme="dark"] pre code .hljs-addition { color: #aff5b4; background-color: #033a16; }
+[data-theme="dark"] pre code .hljs-deletion { color: #ffdcd7; background-color: #67060c; }
+main.content blockquote {
+  border-left: 4px solid var(--accent);
+  background: var(--blockquote-bg);
+  padding: 12px 16px;
+  margin: 12px 0 16px;
+  color: var(--blockquote-text);
+}
+main.content blockquote p { margin-bottom: 4px; }
+main.content blockquote p:last-child { margin-bottom: 0; }
+main.content img {
+  max-width: 100%;
+  height: auto;
+  /* border: 1px solid var(--border-color); */
+  border-radius: 6px;
+  margin: 8px 0;
+  /* box-shadow: 0 2px 8px rgba(0,0,0,0.08); */
+  cursor: zoom-in;
+}
+main.content p:has(> img:only-child) {
+  text-align: center;
+}
+main.content a { color: var(--link-color); text-decoration: underline; text-underline-offset: 2px; }
+main.content a:visited { color: var(--link-visited); }
+main.content a:hover { color: var(--accent); }
+main.content ul.contains-task-list { list-style: none; padding-left: 1.2em; }
+main.content li.task-list-item { list-style: none; position: relative; padding-left: 0; }
+/* GFM-style task list checkboxes: 自訂外觀，比原生 checkbox 易讀 */
+main.content li.task-list-item > input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0 8px 0 -22px;
+  vertical-align: -3px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg);
+  cursor: default;
+  position: relative;
+  flex-shrink: 0;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+main.content li.task-list-item > input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+main.content li.task-list-item > input[type="checkbox"]:checked::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 0px;
+  width: 5px;
+  height: 9px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+main.content li.task-list-item > input[type="checkbox"]:disabled {
+  opacity: 1;
+}
+main.content input[type="checkbox"] { margin-right: 6px; }
+
+/* Inline code Copy button (popup 方式，不佔用文字流空間) */
+.inline-code-wrapper {
+  position: relative;
+  display: inline-block;
+}
+/* 用 ::after 偽元素向右延伸 hover 區域，讓滑鼠移向 Copy 按鈕時不會斷開 */
+.inline-code-wrapper::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: -50px;
+  width: 50px;
+  height: 100%;
+  pointer-events: none;
+}
+.inline-code-wrapper:hover::after {
+  pointer-events: auto;
+}
+.copy-btn {
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--copy-btn-bg);
+  color: var(--text-muted);
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.copy-btn:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.inline-copy {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translate(calc(100% + 4px), -50%);
+  opacity: 0;
+  pointer-events: none;
+  padding: 1px 5px;
+  transition: opacity 0.15s ease;
+  z-index: 10;
+}
+.inline-code-wrapper:hover .inline-copy {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Code block Copy button */
+.code-block-wrapper {
+  position: relative;
+  margin: 12px 0 16px;
+}
+.code-block-wrapper pre {
+  margin: 0;
+}
+.code-block-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 3px 10px;
+  background: rgba(255,255,255,0.12);
+  color: #aaa;
+  border-color: rgba(255,255,255,0.2);
+  z-index: 1;
+}
+.code-block-copy:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+/* Lightbox overlay */
+.lightbox-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--lightbox-bg);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+.lightbox-overlay.active {
+  opacity: 1;
+}
+.lightbox-overlay > img,
+.lightbox-overlay > span {
+  position: absolute;
+  border: none;
+  border-radius: 4px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  cursor: zoom-out;
+  transition: all 0.3s ease;
+  max-width: 90vw;
+  max-height: 90vh;
+}
+.lightbox-overlay > img {
+  object-fit: contain;
+}
+.lightbox-overlay > span {
+  display: block;
+  overflow: visible;
+}
+.lightbox-overlay > span > img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+/* Sidebar collapsed state */
+nav.sidebar.sidebar-collapsed {
+  width: 40px;
+  min-width: 40px;
+  padding: 20px 0 0;
+}
+nav.sidebar.sidebar-collapsed .toc-title {
+  padding: 0 0 12px;
+  justify-content: center;
+}
+nav.sidebar.sidebar-collapsed .toc-title-text,
+nav.sidebar.sidebar-collapsed .toc-links,
+nav.sidebar.sidebar-collapsed .sidebar-controls {
+  display: none;
+}
+nav.sidebar.sidebar-collapsed .sidebar-collapse-btn {
+  padding: 4px;
+}
+body.sidebar-is-collapsed main.content {
+  margin-left: 40px;
+}
+
+/* Sidebar bottom controls */
+.sidebar-controls {
+  flex: 0 0 auto;
+  padding: 8px;
+  border-top: 1px solid var(--border-color);
+  margin-top: auto;
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  height: 44px;
+  box-sizing: border-box;
+}
+.theme-switcher {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 3px;
+  min-width: 0;
+}
+.theme-option {
+  border: none;
+  background: var(--code-bg);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+  -webkit-user-select: none;
+  display: flex; align-items: center; justify-content: center;
+  min-width: 0;
+  overflow: hidden;
+}
+.theme-option:hover { color: var(--text); }
+.theme-option.active {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+}
+
+/* Mobile floating expand button — only shown on small screens when sidebar collapsed */
+.mobile-expand-btn {
+  display: none;
+  position: fixed;
+  top: 50%;
+  left: 0;
+  transform: translateY(-50%);
+  z-index: 150;
+  width: 32px;
+  height: 64px;
+  border: none;
+  background: var(--bg-sidebar);
+  color: var(--text-muted);
+  border-right: 1px solid var(--border-color);
+  border-top-right-radius: 8px;
+  border-bottom-right-radius: 8px;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0;
+  box-shadow: 2px 0 8px rgba(0,0,0,0.15);
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.mobile-expand-btn:hover { color: var(--text); background: var(--code-bg); }
+
+/* Small screens: default to collapsed, expand via overlay */
+@media (max-width: 900px) {
+  nav.sidebar {
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    width: var(--sidebar-width);
+    min-width: var(--sidebar-width);
+    overflow: visible;
+  }
+  nav.sidebar.sidebar-expanded {
+    transform: translateX(0);
+    z-index: 200;
+    box-shadow: 4px 0 16px rgba(0,0,0,0.2);
+  }
+  nav.sidebar.sidebar-expanded .toc-title {
+    padding: 0 16px 12px;
+    justify-content: flex-start;
+  }
+  nav.sidebar.sidebar-expanded .toc-title-text,
+  nav.sidebar.sidebar-expanded .toc-links,
+  nav.sidebar.sidebar-expanded .sidebar-controls {
+    display: flex;
+  }
+  nav.sidebar.sidebar-expanded .toc-links {
+    display: block;
+  }
+  /* In-sidebar collapse button becomes a tab anchored to the right edge of sidebar */
+  nav.sidebar .sidebar-collapse-btn {
+    position: absolute;
+    top: 50%;
+    left: 100%;
+    transform: translateY(-50%);
+    width: 32px;
+    height: 64px;
+    background: var(--bg-sidebar);
+    color: var(--text-muted);
+    border: 1px solid var(--border-color);
+    border-left: none;
+    border-top-right-radius: 8px;
+    border-bottom-right-radius: 8px;
+    font-size: 18px;
+    padding: 0;
+    box-shadow: 2px 0 8px rgba(0,0,0,0.15);
+    z-index: 201;
+  }
+  main.content {
+    margin-left: 0;
+    padding: 24px;
+  }
+  body.sidebar-is-collapsed main.content {
+    margin-left: 0;
+  }
+  .mobile-expand-btn {
+    display: block;
+  }
+  nav.sidebar.sidebar-expanded ~ .mobile-expand-btn,
+  body:has(nav.sidebar.sidebar-expanded) .mobile-expand-btn {
+    display: none;
+  }
+}
+@media (max-width: 600px) {
+  main.content { padding: 16px 12px 48px; max-width: 100vw; }
+  main.content h1 { font-size: 1.5em; }
+  main.content h2 { font-size: 1.25em; margin: 28px 0 12px; }
+  main.content h3 { font-size: 1.1em; margin: 20px 0 8px; }
+  main.content table { font-size: 13px; }
+  main.content th, main.content td { padding: 6px 8px; }
+  .inline-copy { display: none; }
+  nav.sidebar.sidebar-expanded { width: 220px; min-width: 220px; }
+  .theme-option, .slides-btn { font-size: 11px; }
+}
+
+/* Print page setup with customised margin-box headers/footers.
+   Supported on Chromium 131+ (Chrome, Edge). Safari/Firefox ignore the
+   margin-box content and fall back to their built-in browser header/footer.
+   When margin-box content is present, Chromium auto-suppresses its default
+   built-in header (date + title) and footer (URL + page numbers). */
+@page {
+  size: A4;
+  margin: 18mm 18mm 22mm 18mm;
+
+  @top-left {
+    content: "記憶卡內容歸檔邏輯：以裝置為單位上傳到 Azure Blob Storage";
+    font: 10pt / 1.2 -apple-system, "Segoe UI", system-ui, sans-serif;
+    color: #555;
+    padding-bottom: 4mm;
+  }
+  @top-right {
+    content: "2026-05-19 09:55:00";
+    font: 10pt / 1.2 -apple-system, "Segoe UI", system-ui, sans-serif;
+    color: #777;
+    padding-bottom: 4mm;
+  }
+  @bottom-left {
+    content: "dinowang";
+    font: 9pt / 1.2 -apple-system, "Segoe UI", system-ui, sans-serif;
+    color: #777;
+    padding-top: 4mm;
+  }
+  @bottom-right {
+    content: "Page " counter(page) " of " counter(pages);
+    font: 9pt / 1.2 -apple-system, "Segoe UI", system-ui, sans-serif;
+    color: #777;
+    padding-top: 4mm;
+  }
+}
+
+/* Print mode: hide sidebar, controls, and any floating UI; show only the
+   document body in full width with print-friendly colors. */
+@media print {
+  /* Force a clean white background regardless of user theme */
+  :root, [data-theme="dark"] {
+    --bg-main: #ffffff;
+    --bg-sidebar: #ffffff;
+    --text: #000000;
+    --text-muted: #333333;
+    --accent: #0a4d8c;
+    --accent-bg: transparent;
+    --border-color: #999999;
+    --code-bg: #f0f0f0;
+    --code-block-bg: #f6f6f6;
+    --code-block-text: #000000;
+    --table-header-bg: #eeeeee;
+    --table-stripe-bg: #f6f6f6;
+    --blockquote-bg: transparent;
+    --blockquote-border: #999999;
+    --blockquote-text: #333333;
+  }
+  body { background: #ffffff; color: #000000; }
+
+  /* Hide chrome */
+  nav.sidebar,
+  .sidebar-collapse-btn,
+  .mobile-expand-btn,
+  .copy-btn,
+  .inline-copy,
+  .slides-btn,
+  .theme-switcher,
+  .sidebar-controls,
+  .presentation-overlay,
+  .presentation-close,
+  .laser-dot,
+  /* lightbox overlay (markdown-to-html) */
+  .lightbox-overlay,
+  /* animation-maker floating overlays (host + controls) */
+  [data-anim-host],
+  [data-anim-ctrl] {
+    display: none !important;
+  }
+
+  /* Inline-code wrapper still shows the code (just hide the hover copy btn,
+     covered above), so no change there. */
+
+  /* Expand main content to the full page; remove the sidebar offset */
+  main.content {
+    margin: 0 !important;
+    padding: 0 !important;
+    max-width: none !important;
+    width: 100% !important;
+  }
+  body.sidebar-is-collapsed main.content,
+  body main.content {
+    margin-left: 0 !important;
+  }
+
+  /* Print typography niceties */
+  main.content a {
+    color: #000000;
+    text-decoration: underline;
+  }
+  main.content h1, main.content h2, main.content h3, main.content h4 {
+    page-break-after: avoid;
+  }
+  main.content pre, main.content table, main.content blockquote, main.content img {
+    page-break-inside: avoid;
+  }
+  main.content img {
+    max-width: 100% !important;
+    height: auto !important;
+  }
+  /* If a link has an http(s):// URL, append it after the text for paper trails.
+     Skip anchors (same-page) and obviously-internal hrefs. */
+  main.content a[href^="http"]::after {
+    content: " (" attr(href) ")";
+    font-size: 0.85em;
+    color: #555;
+    word-break: break-all;
+  }
+}
+
+/* Presentation overlay */
+.presentation-overlay {
+  display: none;
+  position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+  z-index: 99999;
+}
+.presentation-overlay.active { display: block; cursor: none; }
+.presentation-overlay.active * { cursor: none; }
+.presentation-overlay.active .reveal .controls { cursor: pointer; }
+.presentation-loading {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: 36px; height: 36px; border: 3px solid rgba(128,128,128,0.2);
+  border-top-color: var(--accent); border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: translate(-50%, -50%) rotate(360deg); } }
+.laser-dot {
+  position: fixed; width: 21px; height: 21px; border-radius: 50%;
+  background: #e00; box-shadow: 0 0 8px 3px rgba(224,0,0,0.5);
+  pointer-events: none; z-index: 100001; transform: translate(-50%,-50%);
+  display: none;
+}
+.presentation-close {
+  position: fixed; top: 12px; right: 16px; z-index: 100000;
+  background: rgba(128,128,128,0.3); border: none; color: #fff;
+  font-size: 24px; width: 40px; height: 40px; border-radius: 50%;
+  cursor: pointer; display: none; align-items: center; justify-content: center;
+  backdrop-filter: blur(4px); transition: background 0.2s;
+}
+.presentation-close:hover { background: rgba(128,128,128,0.5); }
+.presentation-overlay.active ~ .presentation-close { display: flex; }
+
+/* Reveal slide content styling */
+.presentation-overlay .reveal .slides section { text-align: left; }
+.presentation-overlay .reveal .slides h1 { font-size: 1.6em; margin-bottom: 0.4em; border: none; padding: 0; }
+.presentation-overlay .reveal .slides h2 { font-size: 1.3em; margin-bottom: 0.3em; border: none; padding: 0; }
+.presentation-overlay .reveal .slides h3 { font-size: 1.1em; margin-top: 0.6em; margin-bottom: 0.3em; border: none; padding: 0; }
+.presentation-overlay .reveal .slides h4 { font-size: 0.95em; margin-top: 0.5em; margin-bottom: 0.2em; border: none; padding: 0; }
+.presentation-overlay .reveal .slides p,
+.presentation-overlay .reveal .slides li,
+.presentation-overlay .reveal .slides td,
+.presentation-overlay .reveal .slides th { font-size: 0.65em; line-height: 1.5; }
+.presentation-overlay .reveal .slides li > p { font-size: inherit; margin: 0; }
+.presentation-overlay .reveal .slides li { margin-bottom: 0.15em; }
+.presentation-overlay .reveal .slides pre { font-size: 0.55em; }
+.presentation-overlay .reveal .slides table { font-size: 0.6em; width: 100%; }
+.presentation-overlay .reveal .slides ul,
+.presentation-overlay .reveal .slides ol { display: block; margin-left: 1em; }
+.presentation-overlay .reveal .slides img { max-height: 55vh; display: block; margin: 0.5em auto; }
+.presentation-overlay .reveal .slides > section > section { overflow-y: auto; max-height: 100%; }
+/* Reset page styles inside reveal — let reveal theme control colors */
+.presentation-overlay .reveal .slides h1,
+.presentation-overlay .reveal .slides h2,
+.presentation-overlay .reveal .slides h3,
+.presentation-overlay .reveal .slides h4,
+.presentation-overlay .reveal .slides p,
+.presentation-overlay .reveal .slides li,
+.presentation-overlay .reveal .slides td,
+.presentation-overlay .reveal .slides th,
+.presentation-overlay .reveal .slides a,
+.presentation-overlay .reveal .slides code,
+.presentation-overlay .reveal .slides blockquote {
+  color: inherit;
+}
+.presentation-overlay .reveal .slides pre,
+.presentation-overlay .reveal .slides code {
+  background: rgba(128,128,128,0.15);
+}
+.presentation-overlay .reveal .slides table {
+  border-collapse: collapse;
+}
+.presentation-overlay .reveal .slides th,
+.presentation-overlay .reveal .slides td {
+  border: 1px solid rgba(128,128,128,0.3);
+  padding: 4px 8px;
+  background: transparent;
+}
+.presentation-overlay .reveal .slides th {
+  background: rgba(128,128,128,0.1);
+  font-weight: 600;
+}
+.presentation-overlay .reveal .slides tr:nth-child(even) {
+  background: transparent;
+}
+.presentation-overlay .reveal .slides blockquote {
+  background: rgba(128,128,128,0.1);
+  border-left: 4px solid rgba(128,128,128,0.4);
+  padding: 8px 16px;
+  margin: 8px 0;
+}
+.presentation-overlay .reveal .slides hr {
+  border-color: rgba(128,128,128,0.3);
+}
+.presentation-overlay .reveal .slides section > hr:last-child {
+  display: none;
+}
+.presentation-overlay .copy-btn {
+  display: none !important;
+}
+
+/* Slides button in sidebar */
+.slides-btn {
+  flex: 0 0 36px;
+  background: var(--code-bg); color: var(--text-muted); border: none; border-radius: 6px;
+  font-size: 13px; cursor: pointer; transition: all 0.15s ease;
+  display: flex; align-items: center; justify-content: center;
+  min-width: 0; overflow: hidden;
+}
+.slides-btn:hover { color: var(--text); background: var(--border-color); }
+</style>
+</head>
+<body>
+<button class="mobile-expand-btn" id="mobileExpandBtn" title="展開側欄" aria-label="展開側欄">»</button>
+<nav class="sidebar" id="sidebar">
+  <div class="toc-title"><span class="toc-title-text">目錄</span><button class="sidebar-collapse-btn" id="sidebarCollapseBtn" title="收合側欄">«</button></div>
+  <div class="toc-links">
+  <a class="toc-h2" href="#目的與設計取捨" data-target="目的與設計取捨">目的與設計取捨</a>
+  <a class="toc-h2" href="#名詞" data-target="名詞">名詞</a>
+  <a class="toc-h2" href="#高階流程" data-target="高階流程">高階流程</a>
+  <a class="toc-h2" href="#步驟-2裝置偵測" data-target="步驟-2裝置偵測">步驟 2：裝置偵測</a>
+  <a class="toc-h3" href="#21-預處理dotfile-過濾" data-target="21-預處理dotfile-過濾">2.1 預處理：dotfile 過濾</a>
+  <a class="toc-h3" href="#22-phase-1以資料夾檔名-pattern-分桶" data-target="22-phase-1以資料夾檔名-pattern-分桶">2.2 Phase 1：以資料夾／檔名 pattern 分桶</a>
+  <a class="toc-h3" href="#23-phase-2mp4-insv-內部-metadata-atom" data-target="23-phase-2mp4-insv-內部-metadata-atom">2.3 Phase 2：MP4 / .insv 內部 metadata atom</a>
+  <a class="toc-h3" href="#24-phase-25insta360-fileinfolistlist-替代路徑" data-target="24-phase-25insta360-fileinfolistlist-替代路徑">2.4 Phase 2.5：Insta360 `fileinfo_list.list` 替代路徑</a>
+  <a class="toc-h3" href="#25-訊號合併與裝置確定" data-target="25-訊號合併與裝置確定">2.5 訊號合併與裝置確定</a>
+  <a class="toc-h3" href="#26-把每個檔案綁到-device" data-target="26-把每個檔案綁到-device">2.6 把每個檔案綁到 Device</a>
+  <a class="toc-h2" href="#步驟-3規劃-ingest-planblob-name-對應" data-target="步驟-3規劃-ingest-planblob-name-對應">步驟 3：規劃 ingest plan（Blob name 對應）</a>
+  <a class="toc-h3" href="#31-devicekey-計算" data-target="31-devicekey-計算">3.1 DeviceKey 計算</a>
+  <a class="toc-h3" href="#32-blob-name-形狀" data-target="32-blob-name-形狀">3.2 Blob name 形狀</a>
+  <a class="toc-h3" href="#33-為什麼不在路徑加時戳" data-target="33-為什麼不在路徑加時戳">3.3 為什麼**不**在路徑加時戳</a>
+  <a class="toc-h3" href="#34-unknown-的填法" data-target="34-unknown-的填法">3.4 `unknown/` 的填法</a>
+  <a class="toc-h3" href="#35-衝突偵測最後一道防線" data-target="35-衝突偵測最後一道防線">3.5 衝突偵測（最後一道防線）</a>
+  <a class="toc-h3" href="#36-plan-呈現格式給人看的不是給-logger" data-target="36-plan-呈現格式給人看的不是給-logger">3.6 Plan 呈現格式（給人看的，不是給 logger）</a>
+  <a class="toc-h2" href="#流程總覽" data-target="流程總覽">流程總覽</a>
+  <a class="toc-h2" href="#邊界情境與顯式不處理" data-target="邊界情境與顯式不處理">邊界情境與顯式不處理</a>
+  <a class="toc-h2" href="#風險與限制" data-target="風險與限制">風險與限制</a>
+  <a class="toc-h2" href="#與-pocsrcfiling-poc的對應" data-target="與-pocsrcfiling-poc的對應">與 POC（`src/filing-poc/`）的對應</a>
+  <a class="toc-h2" href="#與-eval-action-camera-flash-detectionmd-的對應" data-target="與-eval-action-camera-flash-detectionmd-的對應">與 `eval-action-camera-flash-detection.md` 的對應</a>
+  <a class="toc-h2" href="#後續-todo" data-target="後續-todo">後續 / TODO</a>
+
+  </div>
+  <div class="sidebar-controls">
+    <div class="theme-switcher">
+      <button class="theme-option active" data-theme="auto" title="Auto">🖥️</button>
+      <button class="theme-option" data-theme="light" title="Light">☀️</button>
+      <button class="theme-option" data-theme="dark" title="Dark">🌙</button>
+    </div>
+    <button class="slides-btn" id="slidesBtn" title="Presentation mode">▶</button>
+  </div>
+</nav>
+
+<div class="presentation-overlay" id="presentationOverlay"></div>
+<div class="laser-dot" id="laserDot"></div>
+<button class="presentation-close" id="presentationClose" title="Exit presentation">✕</button>
+
+<main class="content">
+<h1 id="記憶卡內容歸檔邏輯以裝置為單位上傳到-azure-blob-storage">記憶卡內容歸檔邏輯：以裝置為單位上傳到 Azure Blob Storage</h1>
+<h2 id="目的與設計取捨">目的與設計取捨</h2>
+<p>本文承接 <a href="./eval-action-camera-flash-detection.md"><span class="inline-code-wrapper"><code>eval-action-camera-flash-detection.md</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></a> 的辨識結論，定義 Action Camera Drain 上傳階段的<strong>歸檔邏輯</strong>：給定一張卡，要把卡上每一個檔案放到 Azure Blob 上的哪一個 blob name。</p>
+<p><strong>核心取捨</strong>：</p>
+<ul>
+<li><strong>以「裝置」為主要分桶單位</strong>。同一台相機產生的素材聚在一起，方便事後尋找與處理。</li>
+<li><strong>無法判斷裝置的檔案，一律歸到 <span class="inline-code-wrapper"><code>unknown/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></strong>，不嘗試「猜」。</li>
+<li><strong>不處理罕見情境</strong>：一張卡被多台相機交換使用是少數情況。如果出現我們的演算法分不開，<strong>就讓它落到同一個裝置桶</strong>，不增加額外的探測邏輯。寧可少分，不要錯分。</li>
+<li><strong>以一次上傳會話（session）為決策單位</strong>。一張卡 = 一次 ingest plan = 一次「先算好所有目的路徑、再執行上傳」。</li>
+</ul>
+<h2 id="名詞">名詞</h2>
+<table>
+<thead><tr>
+<th>詞</th>
+<th>定義</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><strong>Device</strong></td>
+<td>一台實體相機。理想識別為 <span class="inline-code-wrapper"><code>(brand, model, serialNumber)</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>；現實中會有缺項。</td>
+</tr>
+<tr>
+<td><strong>DeviceKey</strong></td>
+<td>Device 在 blob path 中的字串呈現，例如 <span class="inline-code-wrapper"><code>gopro-hero11-a1b2c3d4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>。</td>
+</tr>
+<tr>
+<td><strong>DeviceId 短碼</strong></td>
+<td><span class="inline-code-wrapper"><code>serialNumber</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 經單向 hash 後取前 8 字元的 base32 字串，避免在路徑明文洩露相機序號（PII）。</td>
+</tr>
+<tr>
+<td><strong>Ingest plan</strong></td>
+<td>上傳前生成的「來源檔 → 目的 blob name」對應表，含信心分數與衝突檢查。</td>
+</tr>
+<tr>
+<td><strong>Asset group</strong></td>
+<td>共用同一個 4 位數編號的主檔 + 代理檔（例：<span class="inline-code-wrapper"><code>GH010001.MP4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> + <span class="inline-code-wrapper"><code>GH010001.LRV</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> + <span class="inline-code-wrapper"><code>GH010001.THM</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）；必須一起歸到同一個 device 桶。</td>
+</tr>
+</tbody></table>
+<h2 id="高階流程">高階流程</h2>
+<p>整體流程是一個<strong>先掃描、後上傳</strong>的兩段式設計。掃描階段廉價、可重試、可給使用者預覽；上傳階段才動 Azure。</p>
+<ol>
+<li>取得磁區根目錄（SAF tree URI 或 USB host mount）。</li>
+<li><strong>裝置偵測</strong>（本文重點）— 走訪 <span class="inline-code-wrapper"><code>DCIM/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 與其他關注目錄，產出一個 <span class="inline-code-wrapper"><code>Devices[]</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 列表與一張 <span class="inline-code-wrapper"><code>FileToDeviceMap</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>。</li>
+<li><strong>規劃 ingest plan</strong> — 把每個檔案算出最終 blob name；偵測衝突；給使用者預覽。</li>
+<li>使用者確認後執行上傳。</li>
+<li>上傳成功 → 驗證 → 詢問是否清空卡。</li>
+</ol>
+<p>下面只展開步驟 2 與 3。</p>
+<h2 id="步驟-2裝置偵測">步驟 2：裝置偵測</h2>
+<p>採用 <a href="./eval-action-camera-flash-detection.md"><span class="inline-code-wrapper"><code>eval-action-camera-flash-detection.md</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></a> 的訊號模型，但實作上拆成<strong>三個階段的 cascade</strong>，由便宜到貴依序執行；每一階段可以拿到的訊息越來越精確，但任一階段失敗都會 fall back 而不是中斷。已在 POC（<span class="inline-code-wrapper"><code>src/filing-poc/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）對兩張真實 Insta360 ONE RS 卡（4K Mod 與 360° Mod，同一機身序號）以及合成的 GoPro mdta MP4 驗證。</p>
+<table>
+<thead><tr>
+<th style="text-align:center">階段</th>
+<th>成本</th>
+<th>拿到</th>
+<th>失敗會怎樣</th>
+</tr></thead>
+<tbody>
+<tr>
+<td style="text-align:center"><strong>Phase 1</strong></td>
+<td>純檔名／資料夾 pattern，不開檔</td>
+<td><span class="inline-code-wrapper"><code>brand</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（含 Insta360 lens 區分）</td>
+<td>該桶歸 <span class="inline-code-wrapper"><code>unknown/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+</tr>
+<tr>
+<td style="text-align:center"><strong>Phase 2</strong></td>
+<td>每桶開 1–2 支 MP4／.insv 抽 <span class="inline-code-wrapper"><code>moov/udta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>meta/mdta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td><span class="inline-code-wrapper"><code>brand</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>model</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>firmware</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>serial</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（多為 GoPro、DJI、新版 Insta360）</td>
+<td>用 Phase 1 結果</td>
+</tr>
+<tr>
+<td style="text-align:center"><strong>Phase 2.5</strong></td>
+<td>卡上找 <span class="inline-code-wrapper"><code>DCIM/fileinfo_list.list</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 解 protobuf 字串</td>
+<td>Insta360 <span class="inline-code-wrapper"><code>model</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>firmware</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>serial</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（覆蓋 ONE R/RS + 4K Mod 這個 Ambarella <span class="inline-code-wrapper"><code>udta/AMBA</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 抽不到的盲點）</td>
+<td>用 Phase 1/2 結果</td>
+</tr>
+</tbody></table>
+<blockquote>
+<p><strong>抽樣，不全掃</strong>。Phase 2 對每桶最多開 2 支檔案（讀檔尾 64 KB + <span class="inline-code-wrapper"><code>moov</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 整顆，<1 MB），不是逐檔分析。</p>
+</blockquote>
+<h3 id="21-預處理dotfile-過濾">2.1 預處理：dotfile 過濾</h3>
+<p>走訪前先排除任何路徑片段以 <span class="inline-code-wrapper"><code>.</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 開頭的檔案 — macOS 的 <span class="inline-code-wrapper"><code>.DS_Store</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>._*</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> AppleDouble、Spotlight 殘檔、以及 Insta360 自帶的 <span class="inline-code-wrapper"><code>._Thumb</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 與 <span class="inline-code-wrapper"><code>.cutting-plan/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 快取整顆子樹都跳過。實作上把這條規則放在 file walker 裡（<span class="inline-code-wrapper"><code>is_hidden_path()</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>），偵測階段看不到這些檔案。</p>
+<h3 id="22-phase-1以資料夾檔名-pattern-分桶">2.2 Phase 1：以資料夾／檔名 pattern 分桶</h3>
+<p>走訪 <span class="inline-code-wrapper"><code>DCIM/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 一層，每個子資料夾視為一個<strong>候選 device bucket</strong>。對每桶套用以下訊號表（<strong>第一個命中的決定品牌</strong>）：</p>
+<table>
+<thead><tr>
+<th>訊號</th>
+<th>偵測結果</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>檔名前綴 <span class="inline-code-wrapper"><code>GH</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>/<span class="inline-code-wrapper"><code>GX</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>/<span class="inline-code-wrapper"><code>GP</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>/<span class="inline-code-wrapper"><code>GOPR</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>/<span class="inline-code-wrapper"><code>GS</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> + 副檔名 <span class="inline-code-wrapper"><code>MP4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>/<span class="inline-code-wrapper"><code>JPG</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>/<span class="inline-code-wrapper"><code>LRV</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>/<span class="inline-code-wrapper"><code>THM</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>GoPro</td>
+</tr>
+<tr>
+<td>資料夾名以 <span class="inline-code-wrapper"><code>GOPRO</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 結尾</td>
+<td>GoPro</td>
+</tr>
+<tr>
+<td>出現 <span class="inline-code-wrapper"><code>.insv</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>.insp</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 副檔名</td>
+<td>Insta360（lens=360）</td>
+</tr>
+<tr>
+<td>檔名 <span class="inline-code-wrapper"><code>(VID|LRV)_&lt;日期&gt;_&lt;時間&gt;_01_&lt;序號&gt;.mp4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>Insta360（lens=flat）</td>
+</tr>
+<tr>
+<td>檔名 <span class="inline-code-wrapper"><code>DJI_&lt;序號&gt;.MP4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 或 <span class="inline-code-wrapper"><code>.JPG</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>DJI</td>
+</tr>
+<tr>
+<td>都不符合</td>
+<td>退到下一階段或歸 <span class="inline-code-wrapper"><code>unknown/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+</tr>
+</tbody></table>
+<blockquote>
+<p><strong>為什麼用「子資料夾」當主鍵</strong>：DCF 規範下，相機通常把素材寫進固定字尾（<span class="inline-code-wrapper"><code>GOPRO</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>MEDIA</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>Camera01</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）的子資料夾。這層分桶幾乎免費，且<strong>與檔案內容解耦</strong> — 沒有 IO 成本。</p>
+</blockquote>
+<p>Phase 1 拿到的最多到 brand（與 Insta360 的 lens 模組）；<strong>model 與 serial 永遠拿不到</strong>。</p>
+<h3 id="23-phase-2mp4-insv-內部-metadata-atom">2.3 Phase 2：MP4 / .insv 內部 metadata atom</h3>
+<p>對每個 Phase 1 已有 brand 的桶（或仍是 <span class="inline-code-wrapper"><code>unknown</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 但有可解析檔的桶），開 1～2 支最新的 <span class="inline-code-wrapper"><code>.MP4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>.mp4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>.insv</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>，讀 <span class="inline-code-wrapper"><code>moov</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> atom 內以下兩處：</p>
+<table>
+<thead><tr>
+<th>來源</th>
+<th>對應欄位</th>
+<th>適用</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><span class="inline-code-wrapper"><code>moov/udta/©mak</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>©mod</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>©swr</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（Apple 經典 4-cc）</td>
+<td>make / model / firmware</td>
+<td>老韌體常見</td>
+</tr>
+<tr>
+<td><span class="inline-code-wrapper"><code>moov/udta/meta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（handler <span class="inline-code-wrapper"><code>mdta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）下的 <span class="inline-code-wrapper"><code>keys</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> + <span class="inline-code-wrapper"><code>ilst</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td><span class="inline-code-wrapper"><code>com.apple.quicktime.make</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>.model</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>.software</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>.cameraserialnumber</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>現代 GoPro / DJI / 新款 Insta360 / Apple 裝置</td>
+</tr>
+</tbody></table>
+<p>讀取範圍只需要 <span class="inline-code-wrapper"><code>moov</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> atom — 通常在檔尾（先讀檔尾 64 KB 找 box header 反向定位）或檔頭幾 MB；總成本 < 1 MB random read，<strong>單檔 < 100 ms</strong> 級別。實作見 <a href="../src/filing-poc/mp4probe.py"><span class="inline-code-wrapper"><code>mp4probe.py</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></a>。</p>
+<p><strong>抽出後的合併規則</strong>：</p>
+<ul>
+<li>Phase 1 已有 brand 且 Phase 2 brand 對得上 → 用 Phase 2 的 model / serial 補齊。</li>
+<li>Phase 1 有 brand 但 Phase 2 brand 不同 → 標 <span class="inline-code-wrapper"><code>brand mismatch</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>，<strong>信任 Phase 1</strong>（filename pattern 在實務上比 metadata 字串更穩定）。</li>
+<li>Phase 1 沒 brand 但 Phase 2 抽到 → 升級該桶為 Phase 2 結果。</li>
+<li>Phase 2 完全抽不到 → 桶維持 Phase 1 結果。</li>
+</ul>
+<p><strong>已知限制</strong>：Insta360 ONE RS（韌體 v2.0.11_build3 實機驗證）<span class="inline-code-wrapper"><code>moov/udta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 內<strong>只有</strong> Ambarella SoC 私有的 <span class="inline-code-wrapper"><code>udta/AMBA</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 二進位 blob，沒有 Apple <span class="inline-code-wrapper"><code>©mak/©mod/©swr</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 或 <span class="inline-code-wrapper"><code>meta/mdta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>，這條路在 ONE RS 上<strong>抽不到</strong> model 或 serial。因此引入 Phase 2.5。</p>
+<h3 id="24-phase-25insta360-fileinfolistlist-替代路徑">2.4 Phase 2.5：Insta360 <span class="inline-code-wrapper"><code>fileinfo_list.list</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 替代路徑</h3>
+<p>Insta360 在卡上維護一份索引檔 <span class="inline-code-wrapper"><code>DCIM/fileinfo_list.list</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（或卡根層），protobuf-shaped binary，每張卡的每個媒體檔對應一筆 record。Record 內含三個 ASCII 字串欄位（已實機驗證於 ONE RS v2.0.11_build3）：</p>
+<table>
+<thead><tr>
+<th style="text-align:right">protobuf 欄位</th>
+<th style="text-align:center">tag byte</th>
+<th>內容</th>
+<th>範例</th>
+</tr></thead>
+<tbody>
+<tr>
+<td style="text-align:right">1</td>
+<td style="text-align:center"><span class="inline-code-wrapper"><code>0x0a</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>機身序號</td>
+<td><span class="inline-code-wrapper"><code>IRBEN2204WB7GK</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+</tr>
+<tr>
+<td style="text-align:right">2</td>
+<td style="text-align:center"><span class="inline-code-wrapper"><code>0x12</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>型號（以 <span class="inline-code-wrapper"><code>Insta360</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 起頭）</td>
+<td><span class="inline-code-wrapper"><code>Insta360 OneRS</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+</tr>
+<tr>
+<td style="text-align:right">3</td>
+<td style="text-align:center"><span class="inline-code-wrapper"><code>0x1a</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>韌體版本</td>
+<td><span class="inline-code-wrapper"><code>v2.0.11_build3</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+</tr>
+</tbody></table>
+<p><strong>不需要完整 protobuf 解析器</strong>：以「<span class="inline-code-wrapper"><code>0x12 &lt;len&gt; Insta360 …</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>」為 anchor 向前找 <span class="inline-code-wrapper"><code>0x0a</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 序號欄、向後找 <span class="inline-code-wrapper"><code>0x1a</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 韌體欄。整檔有上百筆 record，全部相同（卡是一台機身寫的） → 多數決即可。實作見 <a href="../src/filing-poc/insta360probe.py"><span class="inline-code-wrapper"><code>insta360probe.py</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></a>，<150 行。</p>
+<p>Phase 2.5 <strong>只套用到 Phase 1 已標為 Insta360 的桶</strong>。其他品牌的桶不會被誤覆蓋（混卡 edge case）。</p>
+<blockquote>
+<p>X3 / X4 / X5 系列是否同 schema、欄位編號是否一致，<strong>待驗證</strong>。Phase 2.5 失敗時自然 fall back，整體流程不會中斷。</p>
+</blockquote>
+<h3 id="25-訊號合併與裝置確定">2.5 訊號合併與裝置確定</h3>
+<p>每個桶最後產出 <span class="inline-code-wrapper"><code>Device { brand, model?, lens?, serial?, source }</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>。<span class="inline-code-wrapper"><code>source</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 標籤反映訊號鏈：</p>
+<table>
+<thead><tr>
+<th><span class="inline-code-wrapper"><code>source</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 值</th>
+<th>意義</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><span class="inline-code-wrapper"><code>detected</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>只跑了 Phase 1</td>
+</tr>
+<tr>
+<td><span class="inline-code-wrapper"><code>detected+probed</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>Phase 1 + Phase 2 都有貢獻</td>
+</tr>
+<tr>
+<td><span class="inline-code-wrapper"><code>detected+fileinfo</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>Phase 1 + Phase 2.5（典型 Insta360 路徑）</td>
+</tr>
+<tr>
+<td><span class="inline-code-wrapper"><code>probed</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>probed-fileinfo</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>Phase 1 失敗，靠 Phase 2 / 2.5 救回</td>
+</tr>
+<tr>
+<td><span class="inline-code-wrapper"><code>inherited</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>卡根的零散檔，繼承自唯一的兄弟桶的 Device</td>
+</tr>
+<tr>
+<td><span class="inline-code-wrapper"><code>override</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>CLI / UI 強制覆寫</td>
+</tr>
+<tr>
+<td><span class="inline-code-wrapper"><code>no-match</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>所有訊號都失敗 → <span class="inline-code-wrapper"><code>unknown/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+</tr>
+</tbody></table>
+<p><strong>桶合併規則</strong>（跨桶相同 deviceKey 自動 dedupe）：</p>
+<ul>
+<li>同 <span class="inline-code-wrapper"><code>(brand, model, serial, lens)</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 跨多個 DCIM 子資料夾 → 合併（同一台相機跨 <span class="inline-code-wrapper"><code>100GOPRO</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>101GOPRO</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）。</li>
+<li>同 <span class="inline-code-wrapper"><code>(brand, model)</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、不同 <span class="inline-code-wrapper"><code>serial</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> → 視為<strong>不同 device</strong>。</li>
+<li>同 <span class="inline-code-wrapper"><code>(brand, model)</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、皆無 <span class="inline-code-wrapper"><code>serial</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> → <strong>不強分</strong>，合併為同一個 Device，再靠 §3.5 衝突偵測讓使用者看見。</li>
+<li><strong>卡根的 <span class="inline-code-wrapper"><code>(card root)</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 桶</strong>：本身沒有 Phase 1 訊號。若卡上所有其他桶都指向<strong>同一個</strong> deviceKey，則 <span class="inline-code-wrapper"><code>(card root)</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 桶<strong>繼承</strong>該 Device（標 <span class="inline-code-wrapper"><code>inherited</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）。多 device 的混卡上，<span class="inline-code-wrapper"><code>(card root)</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 維持 unknown。</li>
+</ul>
+<h3 id="26-把每個檔案綁到-device">2.6 把每個檔案綁到 Device</h3>
+<p>對候選桶內的每個檔案：</p>
+<ul>
+<li><strong>主檔</strong>：依桶分配到對應的 Device。</li>
+<li><strong>代理檔（<span class="inline-code-wrapper"><code>.LRV</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>.THM</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>.LRF</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>） / sidecar（<span class="inline-code-wrapper"><code>.SRT</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）</strong>：依「同基底檔名」隱式跟著主檔（共享 source subdir，所以路徑天然落在同一個 device 桶裡）。</li>
+<li><strong>位於 <span class="inline-code-wrapper"><code>DCIM/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 外的檔案</strong>：跟著 <span class="inline-code-wrapper"><code>(card root)</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 桶走（見 §2.5 的繼承規則）。</li>
+</ul>
+<p>至此產出 <span class="inline-code-wrapper"><code>FileToDeviceMap: Map&lt;sourcePath, Device | null&gt;</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>，<span class="inline-code-wrapper"><code>null</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 代表 <span class="inline-code-wrapper"><code>unknown/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>。</p>
+<h2 id="步驟-3規劃-ingest-planblob-name-對應">步驟 3：規劃 ingest plan（Blob name 對應）</h2>
+<h3 id="31-devicekey-計算">3.1 DeviceKey 計算</h3>
+<div class="code-block-wrapper"><button class="copy-btn code-block-copy" onclick="copyCode(this)">Copy</button><pre><code>deviceKey = &quot;{brand}-{model}[-{deviceIdShort}][-{lensTag}]&quot;</code></pre></div>
+<p>組成規則：</p>
+<table>
+<thead><tr>
+<th>段</th>
+<th>規則</th>
+<th>範例</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><span class="inline-code-wrapper"><code>brand</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>小寫、<span class="inline-code-wrapper"><code>[a-z0-9-]</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>，未知時 → 不在這條路徑出現（會走 <span class="inline-code-wrapper"><code>unknown/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）</td>
+<td><span class="inline-code-wrapper"><code>gopro</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>insta360</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>dji</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+</tr>
+<tr>
+<td><span class="inline-code-wrapper"><code>model</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>小寫；空白與 <span class="inline-code-wrapper"><code>_</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 轉 <span class="inline-code-wrapper"><code>-</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>；移除非 <span class="inline-code-wrapper"><code>[a-z0-9-]</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 字元；<strong>若以 <span class="inline-code-wrapper"><code>{brand}-</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 開頭則去除前綴</strong>（避免 <span class="inline-code-wrapper"><code>Insta360 OneRS</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 變成 <span class="inline-code-wrapper"><code>insta360-insta360-oners</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 這種重複）</td>
+<td><span class="inline-code-wrapper"><code>hero11-black</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>oners</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>osmo-action-4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+</tr>
+<tr>
+<td><span class="inline-code-wrapper"><code>lensTag</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>只在 Insta360 ONE R / RS 偵測到模組差異時加</td>
+<td><span class="inline-code-wrapper"><code>lens-360</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>lens-flat</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+</tr>
+<tr>
+<td><span class="inline-code-wrapper"><code>deviceIdShort</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td><span class="inline-code-wrapper"><code>lower(base32(sha256(serialNumber))[:8])</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>；<strong>只在能取得 serialNumber 時加</strong></td>
+<td><span class="inline-code-wrapper"><code>6hsgaflx</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+</tr>
+</tbody></table>
+<p>實作上 deviceKey 的段落順序固定為 <span class="inline-code-wrapper"><code>brand</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>-<span class="inline-code-wrapper"><code>model</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>-<span class="inline-code-wrapper"><code>lensTag</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>-<span class="inline-code-wrapper"><code>deviceIdShort</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（POC 行為驗證過）。</p>
+<p>DeviceKey 範例（含真實實機驗證結果）：</p>
+<ul>
+<li><span class="inline-code-wrapper"><code>gopro-hero11-black-a1b2c3d4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（假設 Phase 2 抽到 serial）</li>
+<li><span class="inline-code-wrapper"><code>gopro-hero11-black</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（沒抓到 serial，但 brand+model 已知）</li>
+<li><span class="inline-code-wrapper"><code>insta360-oners-lens-flat-6hsgaflx</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> ← 真實機身 <span class="inline-code-wrapper"><code>IRBEN2204WB7GK</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 經 hash</li>
+<li><span class="inline-code-wrapper"><code>insta360-oners-lens-360-6hsgaflx</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> ← 同機身，不同模組，<strong>共用短碼</strong></li>
+<li><span class="inline-code-wrapper"><code>insta360-lens-flat</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（Phase 2.5 失敗的 fallback：沒 model 也沒 serial）</li>
+<li><span class="inline-code-wrapper"><code>dji-osmo-action-4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></li>
+<li><span class="inline-code-wrapper"><code>unknown</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（連 brand 都判不到，所有檔案歸到此桶）</li>
+</ul>
+<h3 id="32-blob-name-形狀">3.2 Blob name 形狀</h3>
+<p><strong>Azure Blob 不是真正的階層檔案系統</strong>，blob name 就是 container 內的一條字串；<span class="inline-code-wrapper"><code>/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 只是慣例分隔符，Azure Portal / Storage Explorer 會把它呈現成資料夾。命名規則需服膺 <a href="https://learn.microsoft.com/rest/api/storageservices/naming-and-referencing-containers--blobs--and-metadata">Azure 命名規範</a>：blob name 最長 1024 字元、URL-safe、區分大小寫。</p>
+<p>採用的結構：</p>
+<div class="code-block-wrapper"><button class="copy-btn code-block-copy" onclick="copyCode(this)">Copy</button><pre><code>&lt;container&gt;/
+  &lt;deviceKey&gt;/
+    &lt;sourceSubdir&gt;/
+      &lt;originalFileName&gt;</code></pre></div>
+<ul>
+<li><span class="inline-code-wrapper"><code>container</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>：由使用者在上傳前選定／建立（不在本文範圍）。</li>
+<li><span class="inline-code-wrapper"><code>&lt;sourceSubdir&gt;</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>：<strong>原樣保留</strong>卡上的 DCIM 子資料夾名（例 <span class="inline-code-wrapper"><code>100GOPRO</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>101MEDIA</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>Camera01</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）。如此同一支相機跨資料夾的素材仍保留時間／批次語意。</li>
+<li><span class="inline-code-wrapper"><code>&lt;originalFileName&gt;</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>：<strong>完全不改名</strong>。保留 <span class="inline-code-wrapper"><code>GH010001.MP4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>DJI_0001.MP4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>VID_..._00_001.insv</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>。代理檔（<span class="inline-code-wrapper"><code>.LRV</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>.THM</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>.LRF</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）跟主檔同前綴 → 落在同目錄、不會被遺漏。</li>
+</ul>
+<p>範例：</p>
+<div class="code-block-wrapper"><button class="copy-btn code-block-copy" onclick="copyCode(this)">Copy</button><pre><code>ingest-2026-05/                                                ← container
+  gopro-hero11-black-a1b2c3d4/100GOPRO/GH010001.MP4
+  gopro-hero11-black-a1b2c3d4/100GOPRO/GH010001.LRV
+  gopro-hero11-black-a1b2c3d4/100GOPRO/GH010001.THM
+  gopro-hero11-black-a1b2c3d4/101GOPRO/GH010052.MP4
+  insta360-one-rs-lens-flat-7h3kp2qx/Camera01/VID_20240519_123456.mp4
+  dji-osmo-action-4/100MEDIA/DJI_0001.MP4
+  dji-osmo-action-4/100MEDIA/DJI_0001.LRF
+  unknown/100MEDIA/MOV_0033.MP4                                ← 連 brand 都判不出來的雜牌</code></pre></div>
+<h3 id="33-為什麼不在路徑加時戳">3.3 為什麼<strong>不</strong>在路徑加時戳</h3>
+<blockquote>
+<p>「為什麼不加 <span class="inline-code-wrapper"><code>&lt;yyyymmdd&gt;/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 一層做進一步分流？」</p>
+</blockquote>
+<ul>
+<li>時戳資訊已經寫在 blob 的 metadata（建立日期）與檔案本身的 EXIF/MP4 metadata 裡。</li>
+<li>同一台相機的同一卷素材跨午夜很常見，硬拆會把連續事件切成兩個資料夾。</li>
+<li>真正要做時間導向的查詢，下游 indexer（或 Azure 的 Tags / Index）更合適，不要把它焊死在 blob name 上。</li>
+</ul>
+<h3 id="34-unknown-的填法">3.4 <span class="inline-code-wrapper"><code>unknown/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 的填法</h3>
+<p>下列檔案一律落到 <span class="inline-code-wrapper"><code>unknown/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>：</p>
+<ul>
+<li>候選桶完全沒線索（連 brand 都判不到）。</li>
+<li>在 <span class="inline-code-wrapper"><code>DCIM/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 之外被掃到的檔案（例如直接放在卡根目錄的 <span class="inline-code-wrapper"><code>MISC.MP4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）。當卡上所有其他桶都歸到同一台 device 時，這些檔依 §2.5 的繼承規則跟著走（標 <span class="inline-code-wrapper"><code>inherited</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）；當卡上是 unknown 或混 device 時，這些檔直接歸 <span class="inline-code-wrapper"><code>unknown/&lt;檔名&gt;</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（不增加中間 source subdir 層）。</li>
+<li>MP4 parser 解析失敗的 corrupt 檔案。</li>
+</ul>
+<p><span class="inline-code-wrapper"><code>unknown/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 內部仍<strong>保留 source subdir</strong>（有的話），方便事後人工辨認。</p>
+<h3 id="35-衝突偵測最後一道防線">3.5 衝突偵測（最後一道防線）</h3>
+<p>ingest plan 構建完畢後，<strong>強制</strong>對「目的 blob name」做唯一性檢查：</p>
+<table>
+<thead><tr>
+<th>衝突情境</th>
+<th>處理</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>兩個 source 檔算出<strong>同一個</strong> blob name</td>
+<td>UI 上必須警告；上傳前不解決就不能執行</td>
+</tr>
+<tr>
+<td>目的 container 上<strong>已存在</strong>同名 blob</td>
+<td>預設策略：<strong>skip</strong>（呈現「此檔已存在於目的端，將略過」）；使用者可改 overwrite 或 rename 為 <span class="inline-code-wrapper"><code>{stem}-{shortHash}{ext}</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+</tr>
+<tr>
+<td>同名但 size / md5 一致</td>
+<td>視為冪等成功，標記為 <span class="inline-code-wrapper"><code>already-uploaded</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+</tr>
+<tr>
+<td>同名但 size / md5 不同</td>
+<td>視為真衝突，套上面策略</td>
+</tr>
+</tbody></table>
+<p>衝突的常見來源：</p>
+<ol>
+<li>兩台<strong>同型號、無 serial</strong>、且 DCF 子資料夾名相同（例：兩台 GoPro 同型號都寫到 <span class="inline-code-wrapper"><code>100GOPRO/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>，序號又撞）。這是我們<strong>主動放棄</strong>處理的情境 — <span class="inline-code-wrapper"><code>eval-action-camera-flash-detection.md</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 已標示型號級可信、device 級在無 serial 時不可信。讓使用者看到衝突清單並決定。</li>
+<li>重複 ingest 同一張卡。本來就該是冪等的。</li>
+<li>卡上事前被別人手動複製過檔。</li>
+</ol>
+<h3 id="36-plan-呈現格式給人看的不是給-logger">3.6 Plan 呈現格式（給人看的，不是給 logger）</h3>
+<p>ingest plan 的預設視角是<strong>逐 filing profile 一行</strong>，不逐檔。原因：多數情況下一張卡只有一個 profile（單機卡），逐檔列 200 多行對使用者沒幫助。</p>
+<p>預設摘要視角的結構：</p>
+<div class="code-block-wrapper"><button class="copy-btn code-block-copy" onclick="copyCode(this)">Copy</button><pre><code>source     : &lt;path&gt;
+container  : &lt;azure-container&gt;
+total      : N file(s), human-size
+
+Filing plan:
+  &lt;deviceKey&gt;          N files,  size   [source-tag]
+    └─ &lt;sub-dir&gt;/       n files,  size   (e.g. &lt;sample-filename&gt;)
+    └─ &lt;sub-dir&gt;/       n files,  size
+
+[Probe notes:]
+  - [&lt;bucket&gt;] brand mismatch: ...
+
+[Issues:]
+  CONFLICT   &lt;blob-name&gt;
+              &lt;- &lt;source-path&gt;
+              &lt;- &lt;source-path&gt;
+  OVERSIZED (N bytes)  &lt;blob-name&gt;
+
+Needs attention: ...   或   Looks clean.  No conflicts, no unknowns, no oversized names.</code></pre></div>
+<ul>
+<li><strong>subdir 細分</strong>只在「一個 profile 內有多個 source subdir」或「profile 是 <span class="inline-code-wrapper"><code>unknown</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>」時展開。</li>
+<li><strong>逐檔對應</strong>只在 <span class="inline-code-wrapper"><code>--verbose</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 才印出。</li>
+<li><strong><span class="inline-code-wrapper"><code>unknown/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 桶永遠展開</strong>，方便使用者決定下一步（手動覆寫品牌、改檔名、跳過）。</li>
+</ul>
+<h2 id="流程總覽">流程總覽</h2>
+<table>
+<thead><tr>
+<th style="text-align:center">步</th>
+<th>動作</th>
+<th>對應章節</th>
+</tr></thead>
+<tbody>
+<tr>
+<td style="text-align:center">1</td>
+<td>掛載卡（SAF tree URI 或 USB host）</td>
+<td>—</td>
+</tr>
+<tr>
+<td style="text-align:center">2</td>
+<td>以 DCIM 子資料夾建立候選桶</td>
+<td>§2.1</td>
+</tr>
+<tr>
+<td style="text-align:center">3</td>
+<td>每桶抽 1–3 支檔讀 MP4 metadata（brand / model / serial / lens）</td>
+<td>§2.2</td>
+</tr>
+<tr>
+<td style="text-align:center">4</td>
+<td>合併同 <span class="inline-code-wrapper"><code>deviceKey</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 的桶；無 serial 的同型號桶 → 合併</td>
+<td>§2.3</td>
+</tr>
+<tr>
+<td style="text-align:center">5</td>
+<td>建立 <span class="inline-code-wrapper"><code>FileToDeviceMap</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（代理檔跟主檔走；孤兒檔跟桶走）</td>
+<td>§2.4</td>
+</tr>
+<tr>
+<td style="text-align:center">6</td>
+<td>算出每檔的 blob name；未知 → <span class="inline-code-wrapper"><code>unknown/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>§3.1 ~ §3.4</td>
+</tr>
+<tr>
+<td style="text-align:center">7</td>
+<td>衝突偵測（目的端唯一性）；有衝突 → UI 警告，不能直接送出</td>
+<td>§3.5</td>
+</tr>
+<tr>
+<td style="text-align:center">8</td>
+<td>使用者確認後執行上傳</td>
+<td>—</td>
+</tr>
+</tbody></table>
+<blockquote>
+<p>步驟 1–7 全在記憶體完成、不動 Azure；步驟 8 才實際呼叫 Blob API。</p>
+</blockquote>
+<h2 id="邊界情境與顯式不處理">邊界情境與顯式不處理</h2>
+<p>下列情境<strong>設計上不嘗試解決</strong>，因為發生機率低、且解法會把架構顯著複雜化：</p>
+<ol>
+<li><strong>同卡多台同型號相機，皆無 serial</strong>：合併成同一個 device 桶。靠衝突偵測讓使用者看見。</li>
+<li><strong>使用者在 PC 上重新命名／搬動過檔案</strong>：以呈現的檔名為準。原始 DCF 結構若被破壞，就會走到 <span class="inline-code-wrapper"><code>unknown/&lt;檔名&gt;</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（沒有中間 subdir）。</li>
+<li><strong>卡上同時存在某品牌的 360° 與平面素材</strong>（罕見的 Insta360 模組混用）：依 lensTag 自然分桶；不額外做交叉驗證。</li>
+<li><strong>GoPro CASN 對應同一裝置但韌體版本不同</strong>：deviceKey 不含 firmware，自然會合併。</li>
+<li><strong>時間異常</strong>（相機時鐘錯亂、跨時區）：不參與 deviceKey 計算，不影響分桶。</li>
+<li><strong>Azure 目的端的容器 / 路徑命名衝突 by user</strong>：上傳前 dry-run 一遍 blob exists 檢查；UI 提示。</li>
+</ol>
+<h2 id="風險與限制">風險與限制</h2>
+<ul>
+<li><strong>DeviceId 雖經 hash，仍是強識別子</strong>。同一台相機在同一個 deployment 下會穩定產生同一個短碼；若洩漏與相機關聯，仍可被反向關聯到設備擁有者。應在 app 設定中提供「不在路徑出現裝置短碼」的選項（會退回到「同型號合併」策略）。</li>
+<li><strong>MP4 metadata 字串不是嚴格規範</strong>：<span class="inline-code-wrapper"><code>make</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>model</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 在不同韌體間可能變動（如 <span class="inline-code-wrapper"><code>GoPro</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> vs <span class="inline-code-wrapper"><code>gopro</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> vs <span class="inline-code-wrapper"><code>GoPro Inc.</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>），需在程式中做正規化映射表，並隨韌體更新維護。</li>
+<li><strong>GPMF 解析成本</strong>僅在 GoPro 路徑啟用；其他品牌靠 <span class="inline-code-wrapper"><code>udta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>mdta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 字串足矣，不要在每張卡都載入 GPMF parser。</li>
+<li><strong>Azure Blob name 長度上限 1024</strong>。原檔名通常短，但 <span class="inline-code-wrapper"><code>&lt;deviceKey&gt;/&lt;sourceSubdir&gt;/&lt;originalFileName&gt;</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 拼起來仍應檢查上限；超過時直接 fail-fast 並要求縮短 container／調整 deviceKey 規則（不要默默截斷）。</li>
+<li><strong>大小寫</strong>：Azure Blob name 區分大小寫；本流程<strong>保留原始大小寫</strong>（GoPro <span class="inline-code-wrapper"><code>.MP4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、Insta360 <span class="inline-code-wrapper"><code>.mp4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>），不做正規化以避免「同檔不同 case」的誤判。</li>
+<li><strong>冪等性</strong>：同一張卡多次 ingest 必須得到同樣的 blob name。deviceKey 的 hash 必須是純函式（input = serialNumber，無 salt、無 timestamp）。</li>
+</ul>
+<h2 id="與-pocsrcfiling-poc的對應">與 POC（<span class="inline-code-wrapper"><code>src/filing-poc/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）的對應</h2>
+<p>本文描述的邏輯<strong>已實作為 dry-run POC</strong>，可對任意來源路徑跑出一份 ingest plan，但不會接 Azure、不會動卡。各章節對應到 POC 檔案如下：</p>
+<table>
+<thead><tr>
+<th>本文</th>
+<th>POC 檔案 / 函式</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>§2.1 dotfile 過濾</td>
+<td><span class="inline-code-wrapper"><code>filing.py::is_hidden_path()</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+</tr>
+<tr>
+<td>§2.2 Phase 1 偵測</td>
+<td><span class="inline-code-wrapper"><code>filing.py::detect_bucket()</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+</tr>
+<tr>
+<td>§2.3 Phase 2（MP4 atom）</td>
+<td><span class="inline-code-wrapper"><code>mp4probe.py::probe()</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> + <span class="inline-code-wrapper"><code>extract_camera_fields()</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+</tr>
+<tr>
+<td>§2.4 Phase 2.5（fileinfo_list.list）</td>
+<td><span class="inline-code-wrapper"><code>insta360probe.py::find_fileinfo()</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> + <span class="inline-code-wrapper"><code>probe()</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+</tr>
+<tr>
+<td>§2.5 桶合併與 <span class="inline-code-wrapper"><code>(card root)</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 繼承</td>
+<td><span class="inline-code-wrapper"><code>filing.py::main()</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 內 Phase 2 + inherit 區段</td>
+</tr>
+<tr>
+<td>§3.1 deviceKey 計算</td>
+<td><span class="inline-code-wrapper"><code>filing.py::Device.key()</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+</tr>
+<tr>
+<td>§3.2 Blob name</td>
+<td><span class="inline-code-wrapper"><code>filing.py::plan_blob_name()</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+</tr>
+<tr>
+<td>§3.5 衝突偵測</td>
+<td><span class="inline-code-wrapper"><code>filing.py::main()</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 收集 <span class="inline-code-wrapper"><code>occurrences</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>oversized</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+</tr>
+<tr>
+<td>§3.6 plan 呈現格式</td>
+<td><span class="inline-code-wrapper"><code>filing.py::main()</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 末段 summary view + <span class="inline-code-wrapper"><code>--verbose</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+</tr>
+</tbody></table>
+<p>POC 附有單元測試（<span class="inline-code-wrapper"><code>src/filing-poc/tests/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>），分別針對 MP4 atom reader（合成 fixture）與 fileinfo_list.list reader（合成 fixture）驗證各種 happy / robustness path。實機端則於兩張真實 Insta360 ONE RS 卡跑通：</p>
+<div class="code-block-wrapper"><button class="copy-btn code-block-copy" onclick="copyCode(this)">Copy</button><pre><code>insta360-oners-lens-flat-6hsgaflx   201 files   55.3 GB   [detected+fileinfo]
+insta360-oners-lens-360-6hsgaflx    595 files   127.6 GB  [detected+fileinfo]</code></pre></div>
+<p>兩個 deviceKey 共用 <span class="inline-code-wrapper"><code>6hsgaflx</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 短碼，反映出<strong>同一機身配不同鏡頭模組</strong>。</p>
+<h2 id="與-eval-action-camera-flash-detectionmd-的對應">與 <span class="inline-code-wrapper"><code>eval-action-camera-flash-detection.md</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 的對應</h2>
+<table>
+<thead><tr>
+<th>該文章節</th>
+<th>在本文如何使用</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>各品牌指紋表</td>
+<td>§2.2 Phase 1、§2.3 Phase 2 的 brand / model / serial 抽取依據</td>
+</tr>
+<tr>
+<td>GPMF FourCC <span class="inline-code-wrapper"><code>MINF</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>CASN</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>MUID</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></td>
+<td>§2.3 GoPro 路徑的型號與 serial 來源（Phase 3，POC 尚未實作）</td>
+</tr>
+<tr>
+<td>Insta360 模組差異（360° vs 4K Mod）</td>
+<td>§2.2、§3.1 <span class="inline-code-wrapper"><code>lensTag</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 規則</td>
+</tr>
+<tr>
+<td><span class="inline-code-wrapper"><code>udta/AMBA</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> ONE RS 抽不到 model</td>
+<td>§2.3 「已知限制」、§2.4 替代路徑的動機</td>
+</tr>
+<tr>
+<td>DCF <span class="inline-code-wrapper"><code>100MEDIA</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 不獨家 DJI 的警告</td>
+<td>§2.5 同 brand+model 無 serial 不再強分的依據</td>
+</tr>
+<tr>
+<td>限制：使用者改過卡 / 雜牌 / 舊韌體</td>
+<td>§3.4 <span class="inline-code-wrapper"><code>unknown/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 一律收容；§4 顯式不處理</td>
+</tr>
+</tbody></table>
+<h2 id="後續-todo">後續 / TODO</h2>
+<ul class="contains-task-list">
+<li class="task-list-item"><input type="checkbox" disabled checked> <del>對 Insta360 ONE R / RS + 4K Mod 做一輪 atom dump</del> — 已實機驗證；<span class="inline-code-wrapper"><code>udta/AMBA</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 內無可用字串，改走 Phase 2.5 <span class="inline-code-wrapper"><code>fileinfo_list.list</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>。</li>
+<li class="task-list-item"><input type="checkbox" disabled> 把品牌字串正規化表寫成資料檔（如 <span class="inline-code-wrapper"><code>assets/brand-normalization.json</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>），與韌體更新解耦。目前是寫死在 <span class="inline-code-wrapper"><code>mp4probe.py::_BRAND_MAP</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>。</li>
+<li class="task-list-item"><input type="checkbox" disabled> 對 GoPro 與 DJI 兩家做一輪實機 atom dump，把 <span class="inline-code-wrapper"><code>make</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>model</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 字串實際樣本記下來作為測試資料（POC 目前只在合成 fixture 跑過）。</li>
+<li class="task-list-item"><input type="checkbox" disabled> <strong>Phase 3（GoPro GPMF）</strong>：對 GoPro 路徑加 <span class="inline-code-wrapper"><code>MINF</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> / <span class="inline-code-wrapper"><code>CASN</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 抽取，拿到精確 model 與 serial。等手邊有 GoPro 卡再做。</li>
+<li class="task-list-item"><input type="checkbox" disabled> <strong>Phase 2.5 跨型號驗證</strong>：Insta360 X3 / X4 / X5 系列的 <span class="inline-code-wrapper"><code>fileinfo_list.list</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> schema 是否相同，欄位編號是否一致。</li>
+<li class="task-list-item"><input type="checkbox" disabled> 設計衝突清單的 UI（哪些資料需要呈現給使用者；最少要看到：source path、預定 blob name、衝突類型、處理選項）。</li>
+<li class="task-list-item"><input type="checkbox" disabled> 決策：DeviceId 短碼的 hash 是否要 namespace 一層（例如 <span class="inline-code-wrapper"><code>sha256(brand + &quot;:&quot; + model + &quot;:&quot; + serial)</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）以避免跨品牌撞碼。傾向是要，但成本極低。</li>
+<li class="task-list-item"><input type="checkbox" disabled> 把 POC 的 plan 結構序列化成 <span class="inline-code-wrapper"><code>plan.json</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>，讓未來實際上傳階段（Android 端）可以讀取相同 plan 重跑、續傳、冪等。</li>
+</ul>
+
+</main>
+
+<script>
+// Storage may be disabled (data: URLs, sandboxed iframes). Wrap accesses to fail-safe.
+var safeStorage = {
+  get: function(k) { try { return localStorage.getItem(k); } catch (_) { return null; } },
+  set: function(k, v) { try { localStorage.setItem(k, v); } catch (_) { /* swallow */ } }
+};
+// Copy 功能
+function copyCode(btn) {
+  const code = btn.parentElement.querySelector('code');
+  navigator.clipboard.writeText(code.textContent).then(function() {
+    btn.textContent = 'Copied!';
+    setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
+  });
+}
+function copyInlineCode(btn) {
+  const code = btn.parentElement.querySelector('code');
+  navigator.clipboard.writeText(code.textContent).then(function() {
+    btn.textContent = 'Copied!';
+    setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
+  });
+}
+
+// Lightbox 功能
+function openLightbox(img) {
+  // 若 img 上層直接是 <span>（例如 animation-maker 的 wrapper），
+  // 就以 span 為錨定來源並 cloneNode(true) — 保留 data-* 屬性與內部結構，
+  // 讓掛在 wrapper 上的 overlay（例如動畫追蹤）能在燈箱中持續錨定。
+  var anchor = (img.parentElement && img.parentElement.tagName === 'SPAN')
+    ? img.parentElement
+    : img;
+  var rect = anchor.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    anchor = img;
+    rect = img.getBoundingClientRect();
+  }
+
+  var overlay = document.createElement('div');
+  overlay.className = 'lightbox-overlay';
+
+  var clone;
+  if (anchor === img) {
+    clone = document.createElement('img');
+    clone.src = img.src;
+    clone.alt = img.alt;
+  } else {
+    clone = anchor.cloneNode(true);
+    // 移除可能殘留的內部互動腳本/控制（cloneNode 會帶 onclick 等屬性）
+    var innerImg = clone.querySelector('img');
+    if (innerImg) {
+      innerImg.removeAttribute('onclick');
+    }
+  }
+  // 起始位置：原始錨定元素位置
+  clone.style.top = rect.top + 'px';
+  clone.style.left = rect.left + 'px';
+  clone.style.width = rect.width + 'px';
+  clone.style.height = rect.height + 'px';
+  overlay.appendChild(clone);
+  document.body.appendChild(overlay);
+  // 觸發放大動畫
+  requestAnimationFrame(function() {
+    overlay.classList.add('active');
+    // 計算置中目標位置
+    var vw = window.innerWidth * 0.9;
+    var vh = window.innerHeight * 0.9;
+    var naturalW = img.naturalWidth || rect.width;
+    var naturalH = img.naturalHeight || rect.height;
+    var scale = Math.min(vw / naturalW, vh / naturalH, 1);
+    var finalW = naturalW * scale;
+    var finalH = naturalH * scale;
+    var finalTop = (window.innerHeight - finalH) / 2;
+    var finalLeft = (window.innerWidth - finalW) / 2;
+    clone.style.top = finalTop + 'px';
+    clone.style.left = finalLeft + 'px';
+    clone.style.width = finalW + 'px';
+    clone.style.height = finalH + 'px';
+  });
+  // 關閉 lightbox：縮回錨定元素的當前位置
+  function closeLightbox() {
+    var currentRect = anchor.getBoundingClientRect();
+    clone.style.top = currentRect.top + 'px';
+    clone.style.left = currentRect.left + 'px';
+    clone.style.width = currentRect.width + 'px';
+    clone.style.height = currentRect.height + 'px';
+    overlay.classList.remove('active');
+    setTimeout(function() {
+      overlay.remove();
+    }, 300);
+  }
+  overlay.addEventListener('click', closeLightbox);
+}
+
+// Sidebar collapse/expand
+(function() {
+  var sidebar = document.getElementById('sidebar');
+  var btn = document.getElementById('sidebarCollapseBtn');
+  var mobileBtn = document.getElementById('mobileExpandBtn');
+  var smallMq = window.matchMedia('(max-width: 900px)');
+  // Track viewport breakpoint live. Initial value may be unreliable when this
+  // document is loaded inside a hidden iframe (display:none) — the listener
+  // updates isSmall whenever the iframe later becomes visible at full size.
+  var isSmall = smallMq.matches;
+  try { smallMq.addEventListener('change', function(e) { isSmall = e.matches; applyState(); }); }
+  catch (_) { try { smallMq.addListener(function(e) { isSmall = e.matches; applyState(); }); } catch (__) {} }
+
+  var saved = safeStorage.get('sidebar-collapsed');
+  var collapsed;
+
+  if (saved !== null) {
+    collapsed = saved === 'true';
+  } else {
+    collapsed = isSmall;
+  }
+
+  function applyState() {
+    if (collapsed) {
+      sidebar.classList.add('sidebar-collapsed');
+      sidebar.classList.remove('sidebar-expanded');
+      document.body.classList.add('sidebar-is-collapsed');
+      btn.textContent = '»';
+      btn.title = '展開側欄';
+    } else {
+      sidebar.classList.remove('sidebar-collapsed');
+      sidebar.classList.add('sidebar-expanded');
+      document.body.classList.remove('sidebar-is-collapsed');
+      btn.textContent = '«';
+      btn.title = '收合側欄';
+    }
+    if (mobileBtn) {
+      mobileBtn.style.display = (isSmall && collapsed) ? 'block' : 'none';
+    }
+  }
+
+  applyState();
+
+  btn.addEventListener('click', function() {
+    collapsed = !collapsed;
+    safeStorage.set('sidebar-collapsed', collapsed);
+    applyState();
+  });
+
+  if (mobileBtn) {
+    mobileBtn.addEventListener('click', function() {
+      collapsed = false;
+      safeStorage.set('sidebar-collapsed', collapsed);
+      applyState();
+    });
+  }
+
+  // On small screens, collapse sidebar when a TOC link is clicked.
+  // Read the breakpoint live to handle the case where this script ran while
+  // the iframe was hidden (so the cached isSmall would have been stale).
+  sidebar.querySelectorAll('a[data-target]').forEach(function(link) {
+    link.addEventListener('click', function() {
+      if (smallMq.matches && !collapsed) {
+        collapsed = true;
+        safeStorage.set('sidebar-collapsed', collapsed);
+        applyState();
+      }
+    });
+  });
+})();
+
+// Theme switcher
+(function() {
+  var root = document.documentElement;
+  var buttons = document.querySelectorAll('.theme-option');
+  var mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+  function applyTheme(mode) {
+    if (mode === 'auto') {
+      root.setAttribute('data-theme', mediaQuery.matches ? 'dark' : 'light');
+    } else {
+      root.setAttribute('data-theme', mode);
+    }
+    buttons.forEach(function(btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-theme') === mode);
+    });
+  }
+
+  // Restore saved preference or default to auto
+  var saved = safeStorage.get('theme') || 'auto';
+  applyTheme(saved);
+
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var mode = btn.getAttribute('data-theme');
+      safeStorage.set('theme', mode);
+      applyTheme(mode);
+    });
+  });
+
+  // Listen for device theme changes when in auto mode
+  mediaQuery.addEventListener('change', function() {
+    if ((safeStorage.get('theme') || 'auto') === 'auto') {
+      applyTheme('auto');
+    }
+  });
+})();
+
+// Scroll Spy
+(function() {
+  const links = document.querySelectorAll('nav.sidebar a[data-target]');
+  const sections = [];
+  links.forEach(link => {
+    const id = link.getAttribute('data-target');
+    const el = document.getElementById(id);
+    if (el) sections.push({ link, el });
+  });
+
+  function updateActive() {
+    let current = null;
+    const scrollY = window.scrollY + 60;
+    for (let i = sections.length - 1; i >= 0; i--) {
+      if (sections[i].el.offsetTop <= scrollY) {
+        current = sections[i];
+        break;
+      }
+    }
+    links.forEach(l => l.classList.remove('active'));
+    if (current) {
+      current.link.classList.add('active');
+      current.link.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
+
+  let ticking = false;
+  window.addEventListener('scroll', () => {
+    if (!ticking) {
+      requestAnimationFrame(() => { updateActive(); ticking = false; });
+      ticking = true;
+    }
+  });
+  updateActive();
+})();
+
+// Presentation mode (reveal.js)
+(function() {
+  var overlay = document.getElementById('presentationOverlay');
+  var closeBtn = document.getElementById('presentationClose');
+  var slidesBtn = document.getElementById('slidesBtn');
+  var revealScriptLoaded = false;
+  var revealInstance = null;
+
+  function buildSlides(slidesContainer) {
+    var content = document.querySelector('main.content');
+    var children = Array.from(content.children);
+
+    // Detect deepest heading level present
+    var hasH1 = children.some(function(el) { return el.tagName === 'H1'; });
+    var hasH2 = children.some(function(el) { return el.tagName === 'H2'; });
+    var hasH3 = children.some(function(el) { return el.tagName === 'H3'; });
+
+    if (!hasH1) {
+      // No headings — single slide
+      var sec = document.createElement('section');
+      children.forEach(function(el) { sec.appendChild(el.cloneNode(true)); });
+      slidesContainer.appendChild(sec);
+      return;
+    }
+
+    if (hasH1 && !hasH2 && !hasH3) {
+      // H1 only mode: each H1 + content = one slide
+      var currentSlide = null;
+      children.forEach(function(el) {
+        if (el.tagName === 'H1') {
+          if (currentSlide) slidesContainer.appendChild(currentSlide);
+          currentSlide = document.createElement('section');
+          currentSlide.appendChild(el.cloneNode(true));
+        } else if (currentSlide) {
+          currentSlide.appendChild(el.cloneNode(true));
+        }
+      });
+      if (currentSlide) slidesContainer.appendChild(currentSlide);
+
+    } else if (hasH1 && hasH2 && !hasH3) {
+      // H1+H2 mode: H1 = horizontal section, H2 = vertical slides
+      var h1Sec = null, h2Slide = null;
+      children.forEach(function(el) {
+        if (el.tagName === 'H1') {
+          if (h2Slide && h1Sec) h1Sec.appendChild(h2Slide);
+          h2Slide = null;
+          if (h1Sec) slidesContainer.appendChild(h1Sec);
+          h1Sec = document.createElement('section');
+          var title = document.createElement('section');
+          title.appendChild(el.cloneNode(true));
+          h1Sec.appendChild(title);
+        } else if (el.tagName === 'H2' && h1Sec) {
+          if (h2Slide) h1Sec.appendChild(h2Slide);
+          h2Slide = document.createElement('section');
+          h2Slide.appendChild(el.cloneNode(true));
+        } else {
+          if (h2Slide) {
+            h2Slide.appendChild(el.cloneNode(true));
+          } else if (h1Sec) {
+            h1Sec.lastElementChild.appendChild(el.cloneNode(true));
+          }
+        }
+      });
+      if (h2Slide && h1Sec) h1Sec.appendChild(h2Slide);
+      if (h1Sec) slidesContainer.appendChild(h1Sec);
+
+    } else {
+      // H1+H2+H3 mode: H1 = horizontal section, H2/H3 = flat vertical slides
+      // reveal.js only supports 2 levels, so H2 and H3 are both vertical slides under H1
+      var h1Sec = null, currentSlide = null;
+      children.forEach(function(el) {
+        if (el.tagName === 'H1') {
+          if (currentSlide && h1Sec) h1Sec.appendChild(currentSlide);
+          currentSlide = null;
+          if (h1Sec) slidesContainer.appendChild(h1Sec);
+          h1Sec = document.createElement('section');
+          var title = document.createElement('section');
+          title.appendChild(el.cloneNode(true));
+          h1Sec.appendChild(title);
+        } else if ((el.tagName === 'H2' || el.tagName === 'H3') && h1Sec) {
+          if (currentSlide) h1Sec.appendChild(currentSlide);
+          currentSlide = document.createElement('section');
+          currentSlide.appendChild(el.cloneNode(true));
+        } else {
+          if (currentSlide) {
+            currentSlide.appendChild(el.cloneNode(true));
+          } else if (h1Sec) {
+            h1Sec.lastElementChild.appendChild(el.cloneNode(true));
+          }
+        }
+      });
+      if (currentSlide && h1Sec) h1Sec.appendChild(currentSlide);
+      if (h1Sec) slidesContainer.appendChild(h1Sec);
+    }
+  }
+
+  function getCurrentTheme() {
+    var t = document.documentElement.getAttribute('data-theme');
+    if (t === 'dark') return 'dark';
+    if (t === 'light') return 'light';
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+
+  function ensureRevealCSS() {
+    if (!document.getElementById('reveal-css')) {
+      var link = document.createElement('link');
+      link.id = 'reveal-css';
+      link.rel = 'stylesheet';
+      link.href = 'https://unpkg.com/reveal.js@5/dist/reveal.css';
+      document.head.appendChild(link);
+    }
+    // Update theme each time
+    var isDark = getCurrentTheme() === 'dark';
+    var existing = document.getElementById('reveal-theme');
+    var newHref = isDark
+      ? 'https://unpkg.com/reveal.js@5/dist/theme/night.css'
+      : 'https://unpkg.com/reveal.js@5/dist/theme/white.css';
+    if (existing) {
+      existing.href = newHref;
+    } else {
+      var theme = document.createElement('link');
+      theme.id = 'reveal-theme';
+      theme.rel = 'stylesheet';
+      theme.href = newHref;
+      document.head.appendChild(theme);
+    }
+  }
+
+  function createRevealDOM() {
+    // Recreate fresh .reveal container each time to avoid stale state
+    overlay.innerHTML = '';
+    var revealDiv = document.createElement('div');
+    revealDiv.className = 'reveal';
+    revealDiv.style.width = '100%';
+    revealDiv.style.height = '100%';
+    var slidesDiv = document.createElement('div');
+    slidesDiv.className = 'slides';
+    revealDiv.appendChild(slidesDiv);
+    overlay.appendChild(revealDiv);
+    return { revealDiv: revealDiv, slidesDiv: slidesDiv };
+  }
+
+  function initReveal(revealDiv) {
+    revealDiv.style.visibility = 'hidden';
+    revealInstance = new Reveal(revealDiv, {
+      hash: false, history: false, transition: 'slide',
+      width: 1280, height: 720, margin: 0.04,
+      center: true, embedded: false,
+      controls: true, controlsLayout: 'bottom-right',
+      keyboard: {
+        87: 'up',    // W
+        65: 'left',  // A
+        83: 'down',  // S
+        68: 'right'  // D
+      }
+    });
+    revealInstance.initialize().then(function() {
+      revealDiv.style.visibility = '';
+      var spinner = overlay.querySelector('.presentation-loading');
+      if (spinner) spinner.remove();
+    });
+  }
+
+  function openPresentation() {
+    ensureRevealCSS();
+    var dom = createRevealDOM();
+    buildSlides(dom.slidesDiv);
+    var isDark = getCurrentTheme() === 'dark';
+    overlay.style.background = isDark ? '#191919' : '#fff';
+    // Show loading spinner
+    var spinner = document.createElement('div');
+    spinner.className = 'presentation-loading';
+    overlay.appendChild(spinner);
+    overlay.classList.add('active');
+    closeBtn.style.display = 'flex';
+    closeBtn.style.color = isDark ? '#fff' : '#333';
+    document.body.style.overflow = 'hidden';
+
+    if (revealScriptLoaded) {
+      initReveal(dom.revealDiv);
+      return;
+    }
+
+    var script = document.createElement('script');
+    script.src = 'https://unpkg.com/reveal.js@5/dist/reveal.js';
+    script.onload = function() {
+      revealScriptLoaded = true;
+      initReveal(dom.revealDiv);
+    };
+    document.head.appendChild(script);
+  }
+
+  function closePresentation() {
+    laserDot.style.display = 'none';
+    overlay.classList.remove('active');
+    closeBtn.style.display = 'none';
+    document.body.style.overflow = '';
+    if (revealInstance) {
+      try { revealInstance.destroy(); } catch(e) {}
+      revealInstance = null;
+    }
+    overlay.innerHTML = '';
+  }
+
+  slidesBtn.addEventListener('click', openPresentation);
+  closeBtn.addEventListener('click', closePresentation);
+
+  // Laser dot pointer
+  var laserDot = document.getElementById('laserDot');
+  document.addEventListener('mousemove', function(e) {
+    if (!overlay.classList.contains('active')) return;
+    laserDot.style.left = e.clientX + 'px';
+    laserDot.style.top = e.clientY + 'px';
+    laserDot.style.display = 'block';
+  });
+  overlay.addEventListener('mouseleave', function() {
+    laserDot.style.display = 'none';
+  });
+
+  // Hotkeys: F5 or Cmd/Ctrl+Enter to open, ESC to close
+  window.addEventListener('keydown', function(e) {
+    var isPresenting = overlay.classList.contains('active');
+    if (!isPresenting) {
+      var f5 = e.keyCode === 116;
+      var cmdEnter = e.key === 'Enter' && (e.metaKey || e.ctrlKey);
+      if (f5 || cmdEnter) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        openPresentation();
+        return;
+      }
+    }
+    if (e.key === 'Escape' && isPresenting) {
+      e.stopImmediatePropagation();
+      closePresentation();
+    }
+  }, true);
+})();
+</script>
+</body>
+</html>
