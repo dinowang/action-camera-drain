@@ -4,7 +4,7 @@
 # Final image: FROM scratch + ca-certificates (~15 MB).
 # Multi-arch: build with `docker buildx build --platform linux/amd64,linux/arm64`.
 
-ARG GO_VERSION=1.23
+ARG GO_VERSION=1.25
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS build
 WORKDIR /src
 
