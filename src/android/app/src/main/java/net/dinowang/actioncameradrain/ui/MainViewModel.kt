@@ -101,6 +101,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             usbWatcher.attached.collect { reconcileFromUsb(it) }
         }
+        viewModelScope.launch { pollCardAccessibility() }
+    }
+
+    /**
+     * The USB receiver only fires when the entire reader is unplugged. If the
+     * user pulls the memory card out of the reader (reader stays attached),
+     * the StorageVolume gets unmounted silently. Poll DocumentFile access to
+     * notice and drop the card.
+     */
+    private suspend fun pollCardAccessibility() {
+        val ctx = getApplication<Application>()
+        while (true) {
+            kotlinx.coroutines.delay(2_000)
+            val snapshot = _cards.value
+            val keep = snapshot.filter { card ->
+                val tree = card.treeUri ?: return@filter true
+                isTreeAccessible(ctx, tree)
+            }
+            if (keep.size != snapshot.size) {
+                for (lost in snapshot - keep.toSet()) lost.engine?.reportCardLost()
+                _cards.value = keep
+            }
+        }
     }
 
     override fun onCleared() {
@@ -231,12 +254,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val ctx = getApplication<Application>()
         val key = usbKey(dev)
         val saved = grantedTrees.get(key)
-        if (saved != null && isPermissionStillPersisted(ctx, saved)) {
+        if (saved != null && isPermissionStillPersisted(ctx, saved) &&
+            isTreeAccessibleAndNonEmpty(ctx, saved)
+        ) {
             attachTreeUri(dev.deviceId, saved)
         }
         // Don't pre-compute the picker intent here — vold may not have mounted
         // the volume yet at USB-attach time. The UI calls [buildPickerIntent]
         // at click time instead.
+    }
+
+    /**
+     * Returns true if the tree is currently reachable. We accept any mounted
+     * tree (even if empty) because a card whose files we've already uploaded
+     * may legitimately be empty. The auto-grant path additionally requires the
+     * tree to be non-empty to avoid matching a stale grant from a different
+     * card — that stricter check lives in [resolveCardSource].
+     */
+    private fun isTreeAccessible(ctx: android.content.Context, uri: Uri): Boolean {
+        val doc = runCatching { DocumentFile.fromTreeUri(ctx, uri) }.getOrNull() ?: return false
+        // exists() does a content query; if the underlying volume was unmounted
+        // (card pulled from reader, reader unplugged, etc.) the query returns
+        // no rows → exists() == false.
+        return runCatching { doc.exists() && doc.canRead() }.getOrDefault(false)
+    }
+
+    private fun isTreeAccessibleAndNonEmpty(ctx: android.content.Context, uri: Uri): Boolean {
+        val doc = runCatching { DocumentFile.fromTreeUri(ctx, uri) }.getOrNull() ?: return false
+        if (!doc.exists() || !doc.canRead()) return false
+        val children = runCatching { doc.listFiles() }.getOrNull() ?: return false
+        return children.isNotEmpty()
     }
 
     /** Fresh look-up of a SAF picker intent pre-seeded to a removable volume. */

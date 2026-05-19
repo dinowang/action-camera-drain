@@ -243,10 +243,24 @@ class UploadEngine(
 
         // Commit the block list.
         val contentType = guessContentType(file.name)
-        client.putBlockList(container, item.blobName, uploaded, contentType)
+        val metadata = buildMap {
+            if (mtime > 0L) {
+                // Azure rejects header values containing colons in some metadata
+                // tools; use epoch millis (always safe) + ISO-8601 for humans.
+                put("mtime", mtime.toString())
+                put("mtime_iso", java.time.Instant.ofEpochMilli(mtime).toString())
+            }
+            put("size", size.toString())
+            put("source_name", sanitizeMetaValue(file.name))
+        }
+        client.putBlockList(container, item.blobName, uploaded, contentType, metadata)
         // After successful commit the checkpoint is no longer needed.
         checkpoints.delete(scope, item.blobName)
     }
+
+    /** Azure metadata values must be ASCII; strip anything that isn't printable. */
+    private fun sanitizeMetaValue(s: String): String =
+        s.map { c -> if (c.code in 0x20..0x7E) c else '_' }.joinToString("")
 
     private fun setStatus(blob: String, status: FileUploadStatus) {
         _fileStatus.value = _fileStatus.value.toMutableMap().apply { this[blob] = status }

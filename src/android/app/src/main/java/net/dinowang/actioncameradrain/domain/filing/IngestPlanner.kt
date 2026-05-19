@@ -22,8 +22,12 @@ class IngestPlanner(
     }
 
     fun plan(source: MediaSource): IngestPlan {
-        val files = source.files().filterNot { isHiddenPath(it) }.toList()
-        android.util.Log.d(TAG, "plan: ${files.size} files; rootLabel=${source.rootLabel}")
+        val allFiles = source.files().filterNot { isHiddenPath(it) }.toList()
+        android.util.Log.d(TAG, "plan: ${allFiles.size} files; rootLabel=${source.rootLabel}")
+        // Insta360 catalog files exist purely for camera-side bookkeeping. Use
+        // them for detection (Phase 2a) but don't queue them for upload — they
+        // would otherwise spawn a lens-less bucket alongside Camera0X buckets.
+        val files = allFiles.filterNot { it.name == INSTA360_FILEINFO_NAME }
 
         val buckets: LinkedHashMap<String, MutableList<MediaFile>> = linkedMapOf()
         for (f in files) buckets.getOrPut(sourceSubdirFor(f)) { mutableListOf() }.add(f)
@@ -39,7 +43,7 @@ class IngestPlanner(
 
         // Phase 2a: Insta360 fileinfo_list.list (single shot per card).
         if (enableMp4Probe) {
-            val fileinfo = findInsta360Fileinfo(files)
+            val fileinfo = findInsta360Fileinfo(allFiles)
             android.util.Log.d(TAG, "phase2a: fileinfo=${fileinfo?.pathSegments}")
             if (fileinfo != null) {
                 val data = runCatching { fileinfo.openInputStream().use { it.readBytes() } }
@@ -119,12 +123,17 @@ class IngestPlanner(
         // Build per-file plan.
         val items = mutableListOf<PlannedItem>()
         val occurrences = linkedMapOf<String, MutableList<MediaFile>>()
+        val effectiveBuckets = linkedMapOf<String, Device?>()
         for (f in files) {
             val sub = sourceSubdirFor(f)
-            val dev = bucketDevice[sub]
+            val bucketDev = bucketDevice[sub]
+            val dev = refineForFile(bucketDev, f.name)
             val blob = planBlobName(dev, sub, f.name)
             items += PlannedItem(file = f, blobName = blob, device = dev, subdir = sub)
             occurrences.getOrPut(blob) { mutableListOf() }.add(f)
+            // Reflect per-file lens splits in the displayed bucket map.
+            val bucketKey = dev?.key() ?: "unknown"
+            if (bucketKey !in effectiveBuckets) effectiveBuckets[bucketKey] = dev
         }
 
         val conflicts = occurrences.filterValues { it.size > 1 }
@@ -133,10 +142,31 @@ class IngestPlanner(
 
         return IngestPlan(
             items = items,
-            buckets = bucketDevice.toMap(),
+            buckets = effectiveBuckets.toMap(),
             conflicts = conflicts,
             oversized = oversized,
         )
+    }
+
+    /**
+     * Insta360 mixes flat-lens MP4s and 360-lens INSVs in the same folder. The
+     * bucket-level lens tag is whichever fired first — refine per file so each
+     * lens lands in its own bucket on the remote side.
+     *
+     * On the Insta360 OneRS both lenses share the `_00_` segment number, so
+     * the *extension* — not the filename pattern — is the reliable signal:
+     * `.insv`/`.insp` are 360-only; everything else under an Insta360 bucket
+     * (mp4 / lrv main + proxy) belongs to the flat lens.
+     */
+    private fun refineForFile(bucketDev: Device?, fileName: String): Device? {
+        if (bucketDev?.brand?.equals("Insta360", ignoreCase = true) != true) return bucketDev
+        val ext = extOf(fileName).lowercase()
+        val lensFromName: String = when (ext) {
+            ".insv", ".insp" -> "360"
+            else -> "flat"
+        }
+        return if (lensFromName != bucketDev.lens) bucketDev.copy(lens = lensFromName)
+        else bucketDev
     }
 
     // -- helpers ------------------------------------------------------------

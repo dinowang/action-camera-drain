@@ -117,7 +117,13 @@ class AzureBlobClient(
         http.newCall(req).execute().use { ensureSuccess(it, "PutBlock $container/$blobName ($blockId)") }
     }
 
-    fun putBlockList(container: String, blobName: String, blockIds: List<String>, contentType: String? = null) {
+    fun putBlockList(
+        container: String,
+        blobName: String,
+        blockIds: List<String>,
+        contentType: String? = null,
+        metadata: Map<String, String> = emptyMap(),
+    ) {
         val urlB = accountUrl.newBuilder().addPathSegment(container)
         for (seg in blobName.split('/')) urlB.addPathSegment(seg)
         urlB.addEncodedQueryParameter("comp", "blocklist")
@@ -130,7 +136,14 @@ class AzureBlobClient(
         }
         val body = xml.toRequestBody("application/xml; charset=utf-8".toMediaTypeOrNull())
         val req = Request.Builder().url(urlB.build())
-            .apply { if (!contentType.isNullOrBlank()) header("x-ms-blob-content-type", contentType) }
+            .apply {
+                if (!contentType.isNullOrBlank()) header("x-ms-blob-content-type", contentType)
+                for ((k, v) in metadata) {
+                    // Azure metadata header names must be valid C# identifiers
+                    // (letters, digits, underscore) and are returned lowercased.
+                    header("x-ms-meta-$k", v)
+                }
+            }
             .put(body).build()
         http.newCall(req).execute().use { ensureSuccess(it, "PutBlockList $container/$blobName") }
     }

@@ -130,8 +130,16 @@ private fun UploadConfig.AzureBlob.shortLabel(): String {
 private fun CardUiState.headerTitle(): String {
     // Prefer the detected camera identity from the scan (e.g. "Insta360 OneRS").
     plan?.buckets?.values?.firstOrNull { it?.brand != null }?.let { dev ->
-        return listOfNotNull(dev.brand, dev.model?.takeIf { !it.equals(dev.brand, true) })
-            .joinToString(" ")
+        val brand = dev.brand!!.trim()
+        val model = dev.model?.trim().orEmpty()
+        val display = when {
+            model.isEmpty() -> brand
+            model.equals(brand, true) -> brand
+            model.startsWith("$brand ", true) -> model        // model already contains brand
+            model.startsWith(brand, true) -> model            // e.g. brand="Insta360", model="Insta360OneRS"
+            else -> "$brand $model"
+        }
+        return display
     }
     // Otherwise fall back to USB device name; the volume serial (e.g. 0000-0000) is noise.
     device?.displayName?.let { if (it.isNotBlank()) return it }
