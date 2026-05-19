@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Action Camera Catch</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <header>
+    <h1>🪣 Action Camera Catch</h1>
+    <p class="muted">把雲端素材拉回 NAS。</p>
+  </header>
+
+  <section id="containers-section">
+    <div class="row between">
+      <h2>Containers</h2>
+      <div>
+        <button id="refresh-btn">重新整理</button>
+        <button id="sync-all-btn" class="primary">同步全部</button>
+      </div>
+    </div>
+    <table id="containers-table">
+      <thead><tr><th></th><th>名稱</th><th>遠端</th><th>待下載</th><th>已存在</th><th>待下載大小</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section id="job-section" hidden>
+    <h2>同步進度</h2>
+    <div class="row between">
+      <div>
+        <span id="job-state" class="state">running</span>
+        <span id="job-progress" class="muted"></span>
+      </div>
+      <div>
+        <span id="job-bps" class="muted"></span>
+        <button id="cancel-btn">取消</button>
+      </div>
+    </div>
+    <progress id="job-progress-bar" value="0" max="1"></progress>
+    <details>
+      <summary>事件記錄</summary>
+      <ul id="job-log"></ul>
+    </details>
+  </section>
+
+  <section id="blobs-section" hidden>
+    <h2 id="blobs-title">Blobs</h2>
+    <table id="blobs-table">
+      <thead><tr><th>狀態</th><th>名稱</th><th>大小</th><th>備註</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <script src="/app.js"></script>
+</body>
+</html>

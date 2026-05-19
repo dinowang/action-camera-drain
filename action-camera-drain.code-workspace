@@ -5,8 +5,16 @@
             "path": "."
         },
         {
-            "name": "🤖 Android",
+            "name": "Filing PoC",
+            "path": "src/filing-poc"
+        },
+        {
+            "name": "🤖 Drain (Android)",
             "path": "src/android"
+        },
+        {
+            "name": "⬇️ Catch (Go)",
+            "path": "src/website"
         }
     ],
     "settings": {

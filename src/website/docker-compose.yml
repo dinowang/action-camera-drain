@@ -1,0 +1,26 @@
+# Action Camera Catch — example docker-compose.yml
+#
+# Adjust `volumes` to point at your NAS mount, fill in `env_file`, and run:
+#
+#   docker compose up -d
+#
+# The image is published to ghcr.io for both linux/amd64 and linux/arm64.
+
+services:
+  catch:
+    image: ghcr.io/dinowang/action-camera-catch:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      # Synology example: map an SD-card landing zone on volume1 into /data.
+      # The web UI exposes one folder per Azure container under this root.
+      - /volume1/video/action-cameras:/data
+    # Optional healthcheck via /healthz (uncomment to enable):
+    # healthcheck:
+    #   test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+    #   interval: 30s
+    #   timeout: 3s
+    #   retries: 3
