@@ -138,6 +138,10 @@ class AzureBlobClient(
         val req = Request.Builder().url(urlB.build())
             .apply {
                 if (!contentType.isNullOrBlank()) header("x-ms-blob-content-type", contentType)
+                // Stash uploads in the Cool access tier — write-once archival
+                // assets that are rarely re-read but may need occasional access.
+                // See: https://learn.microsoft.com/azure/storage/blobs/access-tiers-overview
+                header("x-ms-access-tier", "Cool")
                 for ((k, v) in metadata) {
                     // Azure metadata header names must be valid C# identifiers
                     // (letters, digits, underscore) and are returned lowercased.
