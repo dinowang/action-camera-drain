@@ -152,6 +152,15 @@ class UploadEngine(
         item: PlannedItem,
         doneBytes: java.util.concurrent.atomic.AtomicLong,
     ): Boolean = withContext(Dispatchers.IO) {
+        // Skip-if-unchanged: if the remote blob already exists with the same
+        // size and same source mtime metadata, treat as already done.
+        val skip = runCatching { isAlreadyUploaded(item) }.getOrDefault(false)
+        if (skip) {
+            doneBytes.addAndGet(item.file.sizeBytes)
+            setStatus(item.blobName, FileUploadStatus.SKIPPED)
+            checkpoints.delete(scope, item.blobName)
+            return@withContext true
+        }
         setStatus(item.blobName, FileUploadStatus.UPLOADING)
         var attempt = 0
         while (attempt <= maxRetries) {
@@ -179,6 +188,21 @@ class UploadEngine(
             }
         }
         false
+    }
+
+    /**
+     * True when the remote blob exists with identical size and identical
+     * source mtime metadata — meaning a prior committed upload is byte-equivalent
+     * to the current local file and we can safely skip.
+     *
+     * Only counts a "match" if both size and mtime metadata agree. Missing
+     * metadata (e.g., blobs uploaded by an older version) → re-upload.
+     */
+    private fun isAlreadyUploaded(item: PlannedItem): Boolean {
+        val props = client.headBlob(container, item.blobName) ?: return false
+        if (props.contentLength != item.file.sizeBytes) return false
+        val remoteMtime = props.metadata["mtime"]?.toLongOrNull() ?: return false
+        return remoteMtime == item.file.lastModifiedMillis
     }
 
     private suspend fun doUpload(

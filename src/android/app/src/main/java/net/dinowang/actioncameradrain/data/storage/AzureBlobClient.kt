@@ -148,6 +148,29 @@ class AzureBlobClient(
         http.newCall(req).execute().use { ensureSuccess(it, "PutBlockList $container/$blobName") }
     }
 
+    /**
+     * HEAD a blob to retrieve its properties + metadata.
+     * Returns `null` if the blob does not exist (404).
+     * Throws [AzureBlobException] on any other failure.
+     */
+    fun headBlob(container: String, blobName: String): BlobProperties? {
+        val url = blobUrl(container, blobName)
+        val req = Request.Builder().url(url).head().build()
+        http.newCall(req).execute().use { resp ->
+            if (resp.code == 404) return null
+            if (!resp.isSuccessful) {
+                throw AzureBlobException("HEAD $container/$blobName failed: ${resp.code} ${resp.message}")
+            }
+            val length = resp.header("Content-Length")?.toLongOrNull() ?: -1L
+            val meta = mutableMapOf<String, String>()
+            for ((name, value) in resp.headers) {
+                val lower = name.lowercase()
+                if (lower.startsWith("x-ms-meta-")) meta[lower.removePrefix("x-ms-meta-")] = value
+            }
+            return BlobProperties(contentLength = length, metadata = meta)
+        }
+    }
+
     fun deleteBlob(container: String, blobName: String) {
         val url = blobUrl(container, blobName)
         val req = Request.Builder().url(url).delete().build()
@@ -185,3 +208,9 @@ class AzureBlobClient(
 }
 
 class AzureBlobException(message: String) : RuntimeException(message)
+
+/** Subset of blob properties used by the upload pipeline for skip-if-unchanged logic. */
+data class BlobProperties(
+    val contentLength: Long,
+    val metadata: Map<String, String>,
+)
