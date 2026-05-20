@@ -634,7 +634,7 @@ body.sidebar-is-collapsed main.content {
     padding-bottom: 4mm;
   }
   @top-right {
-    content: "2026-05-19 03:35:00";
+    content: "2026-05-20 14:30:00";
     font: 10pt / 1.2 -apple-system, "Segoe UI", system-ui, sans-serif;
     color: #777;
     padding-bottom: 4mm;
@@ -1061,18 +1061,27 @@ body.sidebar-is-collapsed main.content {
 <li>
 <p><strong>第一輪 — 只看檔案系統，不開檔</strong>：</p>
 <ul>
-<li>走訪 <span class="inline-code-wrapper"><code>DCIM/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 一層。</li>
-<li>對訊號打分：<span class="inline-code-wrapper"><code>*GOPRO</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 資料夾、<span class="inline-code-wrapper"><code>GH/GX/GP/GOPR*.MP4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>*.LRV</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>*.THM</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>*.insv</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>*.insp</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>DJI_*.MP4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>*.LRF</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>PRIVATE/AVCHD/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>。</li>
+<li>走訪 <span class="inline-code-wrapper"><code>DCIM/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 一層，並掃卡根層的特殊 catalog 檔（如 <span class="inline-code-wrapper"><code>fileinfo_list.list</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）。</li>
+<li>對訊號打分：<span class="inline-code-wrapper"><code>*GOPRO</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 資料夾、<span class="inline-code-wrapper"><code>GH/GX/GP/GOPR*.MP4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>*.LRV</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>*.THM</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>*.insv</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>*.insp</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>DJI_*.MP4</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>*.LRF</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>PRIVATE/AVCHD/</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>DCIM/fileinfo_list.list</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 或 <span class="inline-code-wrapper"><code>&lt;root&gt;/fileinfo_list.list</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>。</li>
 </ul>
 </li>
 <li>
-<p><strong>第二輪 — 讀 MP4 atom</strong> — 對少量代表性檔案（例如最新的 1–3 個）：</p>
+<p><strong>第二輪 — 讀 Insta360 fileinfo catalog（如果存在）</strong> — 跳過 MP4 atom，直接讀 <span class="inline-code-wrapper"><code>fileinfo_list.list</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>：</p>
+<ul>
+<li>檔案是 protobuf wire format 的 record 陣列。每筆 record 內含 3 個 ASCII string 欄位：tag 1（<span class="inline-code-wrapper"><code>0x0a</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）= 序號、tag 2（<span class="inline-code-wrapper"><code>0x12</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）= 型號、tag 3（<span class="inline-code-wrapper"><code>0x1a</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）= 韌體。</li>
+<li>只要在頭幾百 bytes 內找到 <span class="inline-code-wrapper"><code>0x12 &lt;varint-len&gt; Insta360</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 這個 anchor，就足以高信心判定 Insta360；後續欄位提供型號（含模組）與韌體。</li>
+<li>這條路徑能在 ONE R / RS 掛 <strong>4K 平面模組</strong> 時繞過 AMBA blob 抽不到字串的死路，<strong>比第三輪 MP4 atom 更便宜也更精確</strong>，所以排在前面。</li>
+<li>實作參考 <a href="../src/filing-poc/insta360probe.py"><span class="inline-code-wrapper"><code>src/filing-poc/insta360probe.py</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></a>。</li>
+</ul>
+</li>
+<li>
+<p><strong>第三輪 — 讀 MP4 atom</strong> — 對少量代表性檔案（例如最新的 1–3 個）：</p>
 <ul>
 <li>解析 <span class="inline-code-wrapper"><code>moov/udta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 與 <span class="inline-code-wrapper"><code>moov/meta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（mdta）中的 <span class="inline-code-wrapper"><code>make</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>model</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>firmware</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 字串。</li>
 <li>GoPro 還要進一步定位 <span class="inline-code-wrapper"><code>gpmd</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>-handler 軌道，讀 GPMF（FourCC <span class="inline-code-wrapper"><code>MINF</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>DVNM</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>FMWR</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>）。</li>
 </ul>
 </li>
-<li><strong>信心分數</strong> — 把訊號加總成 <span class="inline-code-wrapper"><code>brand</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>model</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 的預測各自帶上信心區間。≥ 2 個獨立印證訊號視為「高」。</li>
+<li><strong>信心分數</strong> — 把訊號加總成 <span class="inline-code-wrapper"><code>brand</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>model</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 的預測各自帶上信心區間。≥ 2 個獨立印證訊號視為「高」。<span class="inline-code-wrapper"><code>fileinfo_list.list</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 命中本身就足以單獨給 Insta360 高信心。</li>
 <li><strong>永遠允許 UI 手動覆寫</strong>。</li>
 </ol>
 <h2 id="需要的軟體-驅動程式">需要的軟體 / 驅動程式</h2>
@@ -1099,6 +1108,11 @@ body.sidebar-is-collapsed main.content {
 <td>exiftool 全包。</td>
 </tr>
 <tr>
+<td>Insta360 <span class="inline-code-wrapper"><code>fileinfo_list.list</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 解析</td>
+<td>不需要完整 protobuf runtime — wire format 的 varint + length-delimited string 自己寫不到 50 行 Kotlin。只需要解到 tag 1/2/3 三個 string 欄位即可。POC 在 <a href="../src/filing-poc/insta360probe.py"><span class="inline-code-wrapper"><code>src/filing-poc/insta360probe.py</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></a>。</td>
+<td>可用 <span class="inline-code-wrapper"><code>protoc --decode_raw</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 直接 dump。</td>
+</tr>
+<tr>
 <td>GPMF 解析</td>
 <td>移植 <a href="https://github.com/gopro/gpmf-parser"><span class="inline-code-wrapper"><code>gopro/gpmf-parser</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span></a>（C，雙授權 Apache-2.0 / MIT — 都相容）。只需要品牌／型號相關的 FourCC（<span class="inline-code-wrapper"><code>MINF</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>DVNM</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>FMWR</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>CASN</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>、<span class="inline-code-wrapper"><code>MUID</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>），sensor stream 可略過。</td>
 <td>同上，再加上 exiftool。</td>
@@ -1122,9 +1136,10 @@ body.sidebar-is-collapsed main.content {
 </ol>
 <h2 id="給-action-camera-drain-的建議落地路徑">給 Action Camera Drain 的建議落地路徑</h2>
 <ul>
-<li><strong>Phase 1 — 廉價、可直接出貨。</strong> 只看檔案系統做品牌判斷（資料夾名／檔名前綴）。對於設定預設上傳目錄與套用 GoPro／Insta360／DJI 擷取預設值已經夠用。UI 上要顯示信心。</li>
-<li><strong>Phase 2 — 漸進。</strong> 對每個偵測到的資料夾，打開一支 MP4，讀 <span class="inline-code-wrapper"><code>moov/udta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>moov/meta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 的 <span class="inline-code-wrapper"><code>make</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>model</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>。能拉到型號級的準確度。</li>
-<li><strong>Phase 3 — 必要時才做。</strong> 移植 GPMF 中跟品牌／型號相關的子集到 GoPro，抓 <span class="inline-code-wrapper"><code>MINF</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（精確型號）與 <span class="inline-code-wrapper"><code>FMWR</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（韌體）。sensor stream 不做。</li>
+<li><strong>Phase 1 — 廉價、可直接出貨。</strong> 只看檔案系統做品牌判斷（資料夾名／檔名前綴／<span class="inline-code-wrapper"><code>fileinfo_list.list</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 是否存在）。對於設定預設上傳目錄與套用 GoPro／Insta360／DJI 擷取預設值已經夠用。UI 上要顯示信心。</li>
+<li><strong>Phase 2 — Insta360 catalog 讀取（廉價、高精度）。</strong> 偵測到 <span class="inline-code-wrapper"><code>fileinfo_list.list</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 時，直接讀其中的 serial／model／firmware 三個 string 欄位，這比打開 MP4 atom 更便宜，並且能解掉 ONE R / RS 平面模組的盲點。</li>
+<li><strong>Phase 3 — 漸進。</strong> 對每個偵測到的資料夾，打開一支 MP4，讀 <span class="inline-code-wrapper"><code>moov/udta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>moov/meta</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span> 的 <span class="inline-code-wrapper"><code>make</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>／<span class="inline-code-wrapper"><code>model</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>。能拉到型號級的準確度（用於 GoPro／DJI；Insta360 在 Phase 2 已解決）。</li>
+<li><strong>Phase 4 — 必要時才做。</strong> 移植 GPMF 中跟品牌／型號相關的子集到 GoPro，抓 <span class="inline-code-wrapper"><code>MINF</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（精確型號）與 <span class="inline-code-wrapper"><code>FMWR</code><button class="copy-btn inline-copy" onclick="copyInlineCode(this)">Copy</button></span>（韌體）。sensor stream 不做。</li>
 <li><strong>絕不</strong>只靠單一訊號；<strong>永遠</strong>留手動覆寫。</li>
 </ul>
 <h2 id="測試-驗證計畫">測試 / 驗證計畫</h2>

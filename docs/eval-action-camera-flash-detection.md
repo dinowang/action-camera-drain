@@ -17,7 +17,7 @@ type: Evaluation
 favicon: ""
 convertTo: html-embedded
 createdAt: 2026-05-19 02:05:00
-updatedAt: 2026-05-19 03:35:00
+updatedAt: 2026-05-20 14:30:00
 references:
   - type: prompt
     path: ../.prompt/eval-action-camera-flash-detection.md
@@ -124,13 +124,18 @@ references:
 
 1. **掛載並列舉磁區** — 透過 Android 的 USB host API（`UsbManager`）或 Storage Access Framework（`ACTION_OPEN_DOCUMENT_TREE` 讓使用者授權整個樹）。Android 原生不開放直接讀取 block device。
 2. **第一輪 — 只看檔案系統，不開檔**：
-   - 走訪 `DCIM/` 一層。
-   - 對訊號打分：`*GOPRO` 資料夾、`GH/GX/GP/GOPR*.MP4`、`*.LRV`、`*.THM`、`*.insv`、`*.insp`、`DJI_*.MP4`、`*.LRF`、`PRIVATE/AVCHD/`。
-3. **第二輪 — 讀 MP4 atom** — 對少量代表性檔案（例如最新的 1–3 個）：
+   - 走訪 `DCIM/` 一層，並掃卡根層的特殊 catalog 檔（如 `fileinfo_list.list`）。
+   - 對訊號打分：`*GOPRO` 資料夾、`GH/GX/GP/GOPR*.MP4`、`*.LRV`、`*.THM`、`*.insv`、`*.insp`、`DJI_*.MP4`、`*.LRF`、`PRIVATE/AVCHD/`、`DCIM/fileinfo_list.list` 或 `<root>/fileinfo_list.list`。
+3. **第二輪 — 讀 Insta360 fileinfo catalog（如果存在）** — 跳過 MP4 atom，直接讀 `fileinfo_list.list`：
+   - 檔案是 protobuf wire format 的 record 陣列。每筆 record 內含 3 個 ASCII string 欄位：tag 1（`0x0a`）= 序號、tag 2（`0x12`）= 型號、tag 3（`0x1a`）= 韌體。
+   - 只要在頭幾百 bytes 內找到 `0x12 <varint-len> Insta360 ` 這個 anchor，就足以高信心判定 Insta360；後續欄位提供型號（含模組）與韌體。
+   - 這條路徑能在 ONE R / RS 掛 **4K 平面模組** 時繞過 AMBA blob 抽不到字串的死路，**比第三輪 MP4 atom 更便宜也更精確**，所以排在前面。
+   - 實作參考 [`src/filing-poc/insta360probe.py`](../src/filing-poc/insta360probe.py)。
+4. **第三輪 — 讀 MP4 atom** — 對少量代表性檔案（例如最新的 1–3 個）：
    - 解析 `moov/udta` 與 `moov/meta`（mdta）中的 `make`、`model`、`firmware` 字串。
    - GoPro 還要進一步定位 `gpmd`-handler 軌道，讀 GPMF（FourCC `MINF`／`DVNM`／`FMWR`）。
-4. **信心分數** — 把訊號加總成 `brand`、`model` 的預測各自帶上信心區間。≥ 2 個獨立印證訊號視為「高」。
-5. **永遠允許 UI 手動覆寫**。
+5. **信心分數** — 把訊號加總成 `brand`、`model` 的預測各自帶上信心區間。≥ 2 個獨立印證訊號視為「高」。`fileinfo_list.list` 命中本身就足以單獨給 Insta360 高信心。
+6. **永遠允許 UI 手動覆寫**。
 
 ## 需要的軟體 / 驅動程式
 
@@ -139,6 +144,7 @@ references:
 | Block device 存取 | ❌ 沒 root 一般做不到。改用 SAF／USB host。 | OS 原生掛載。 |
 | FAT32 / exFAT 掛載 | 由 Android storage stack 自動處理，使用者授權 USB 裝置或文件樹之後即可。Android 14+（`minSdk = 34`）保證支援 exFAT。 | 原生支援。 |
 | MP4 atom 讀取 | Android 沒內建第一方函式庫可用。選項：自己寫一個小 parser（需要的 atom 不到 100 行），或引用一個 permissive license 的 lib（例如 `mp4parser`／`isobmff`）。 | exiftool 全包。 |
+| Insta360 `fileinfo_list.list` 解析 | 不需要完整 protobuf runtime — wire format 的 varint + length-delimited string 自己寫不到 50 行 Kotlin。只需要解到 tag 1/2/3 三個 string 欄位即可。POC 在 [`src/filing-poc/insta360probe.py`](../src/filing-poc/insta360probe.py)。 | 可用 `protoc --decode_raw` 直接 dump。 |
 | GPMF 解析 | 移植 [`gopro/gpmf-parser`](https://github.com/gopro/gpmf-parser)（C，雙授權 Apache-2.0 / MIT — 都相容）。只需要品牌／型號相關的 FourCC（`MINF`、`DVNM`、`FMWR`、`CASN`、`MUID`），sensor stream 可略過。 | 同上，再加上 exiftool。 |
 | Insta360 `.insv`／`.insp` 解析 | 對品牌／型號判斷而言，把 MP4 外殼當成一般 MP4 處理即可。**不要**依賴 Insta360 CameraSDK — 那是 USB 控制導向（跟連上的相機對話），跟讀「已經放在磁碟上的卡」無關。 | Insta360 Studio 可做完整 demux。 |
 
@@ -155,9 +161,10 @@ references:
 
 ## 給 Action Camera Drain 的建議落地路徑
 
-- **Phase 1 — 廉價、可直接出貨。** 只看檔案系統做品牌判斷（資料夾名／檔名前綴）。對於設定預設上傳目錄與套用 GoPro／Insta360／DJI 擷取預設值已經夠用。UI 上要顯示信心。
-- **Phase 2 — 漸進。** 對每個偵測到的資料夾，打開一支 MP4，讀 `moov/udta`／`moov/meta` 的 `make`／`model`。能拉到型號級的準確度。
-- **Phase 3 — 必要時才做。** 移植 GPMF 中跟品牌／型號相關的子集到 GoPro，抓 `MINF`（精確型號）與 `FMWR`（韌體）。sensor stream 不做。
+- **Phase 1 — 廉價、可直接出貨。** 只看檔案系統做品牌判斷（資料夾名／檔名前綴／`fileinfo_list.list` 是否存在）。對於設定預設上傳目錄與套用 GoPro／Insta360／DJI 擷取預設值已經夠用。UI 上要顯示信心。
+- **Phase 2 — Insta360 catalog 讀取（廉價、高精度）。** 偵測到 `fileinfo_list.list` 時，直接讀其中的 serial／model／firmware 三個 string 欄位，這比打開 MP4 atom 更便宜，並且能解掉 ONE R / RS 平面模組的盲點。
+- **Phase 3 — 漸進。** 對每個偵測到的資料夾，打開一支 MP4，讀 `moov/udta`／`moov/meta` 的 `make`／`model`。能拉到型號級的準確度（用於 GoPro／DJI；Insta360 在 Phase 2 已解決）。
+- **Phase 4 — 必要時才做。** 移植 GPMF 中跟品牌／型號相關的子集到 GoPro，抓 `MINF`（精確型號）與 `FMWR`（韌體）。sensor stream 不做。
 - **絕不**只靠單一訊號；**永遠**留手動覆寫。
 
 ## 測試 / 驗證計畫
