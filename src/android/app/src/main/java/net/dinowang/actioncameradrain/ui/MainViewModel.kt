@@ -56,7 +56,7 @@ data class ContainerPickerState(
     val notice: String? = null,
 ) {
     val suggestions: List<String>
-        get() = (remote + history).distinct()
+        get() = remote
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -157,7 +157,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val trimmed = name.trim()
         if (!isLikelyValidContainerName(trimmed)) {
             _container.value = _container.value.copy(
-                notice = "container 名稱必須 3-63 字元，僅限小寫英數與連字號，且不能以連字號開頭/結尾",
+                notice = "Name must be 3-63 chars, lowercase alphanumeric or '-', not starting/ending with '-'",
             )
             return
         }
@@ -173,7 +173,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         current = trimmed,
                         history = containerRepo.history(cfg.id),
                         loading = false,
-                        notice = "已建立 container：$trimmed",
+                        notice = "Created: $trimmed",
                     )
                     refreshRemoteContainers()
                     invalidatePlans()
@@ -181,7 +181,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 onFailure = { e ->
                     _container.value = _container.value.copy(
                         loading = false,
-                        notice = "建立失敗：${e.message ?: e.javaClass.simpleName}",
+                        notice = "Create failed: ${e.message ?: e.javaClass.simpleName}",
                     )
                 },
             )
@@ -207,7 +207,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _container.value = _container.value.copy(
                         remote = emptyList(),
                         loading = false,
-                        refreshError = "無法列出 container（SAS 可能缺 srt=s/sp=l）：${e.message ?: e.javaClass.simpleName}",
+                        refreshError = "List failed (SAS may need srt=s & sp=l): ${e.message ?: e.javaClass.simpleName}",
                     )
                 },
             )

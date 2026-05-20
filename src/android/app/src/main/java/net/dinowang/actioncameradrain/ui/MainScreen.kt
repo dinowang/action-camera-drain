@@ -28,7 +28,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -77,16 +76,14 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            ConfigSection(config)
-            ContainerSection(
-                state = container,
-                enabled = config is UploadConfig.AzureBlob,
+            RemoteSection(
+                config = config,
+                containerState = container,
                 onInput = vm::onContainerInputChanged,
                 onSelect = vm::selectContainer,
                 onRefresh = vm::refreshRemoteContainers,
                 onCreate = vm::createContainer,
             )
-            HorizontalDivider()
             CardsSection(
                 cards = cards,
                 onPickTree = { deviceId, uri -> vm.attachTreeUri(deviceId, uri) },
@@ -103,10 +100,10 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
 @Composable
 private fun ConfigSection(config: UploadConfig?) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text("目的地：", style = MaterialTheme.typography.bodyMedium)
+        Text("Destination: ", style = MaterialTheme.typography.bodyMedium)
         val display = when (config) {
             null -> "—"
             is UploadConfig.AzureBlob -> config.shortLabel()
@@ -148,21 +145,25 @@ private fun CardUiState.headerTitle(): String {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ContainerSection(
-    state: ContainerPickerState,
-    enabled: Boolean,
+private fun RemoteSection(
+    config: UploadConfig?,
+    containerState: ContainerPickerState,
     onInput: (String) -> Unit,
     onSelect: (String) -> Unit,
     onRefresh: () -> Unit,
     onCreate: (String) -> Unit,
 ) {
+    val enabled = config is UploadConfig.AzureBlob
+    Text("Remote", style = MaterialTheme.typography.titleMedium)
     Card(Modifier.fillMaxWidth(), elevation = CardDefaults.cardElevation(2.dp)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            ConfigSection(config)
+
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Container", style = MaterialTheme.typography.titleMedium)
+                Text("Container", style = MaterialTheme.typography.titleSmall)
                 Spacer(Modifier.weight(1f))
-                IconButton(onClick = onRefresh, enabled = enabled && !state.loading) {
-                    if (state.loading) {
+                IconButton(onClick = onRefresh, enabled = enabled && !containerState.loading) {
+                    if (containerState.loading) {
                         CircularProgressIndicator(modifier = Modifier.height(16.dp))
                     } else {
                         Icon(Icons.Filled.Refresh, contentDescription = "refresh containers")
@@ -171,16 +172,16 @@ private fun ContainerSection(
             }
 
             var expanded by remember { mutableStateOf(false) }
-            val showMenu = expanded && state.suggestions.any { it != state.current.trim() }
+            val showMenu = expanded && containerState.suggestions.any { it != containerState.current.trim() }
             ExposedDropdownMenuBox(
                 expanded = showMenu,
                 onExpandedChange = { expanded = it },
             ) {
                 TextField(
-                    value = state.current,
+                    value = containerState.current,
                     onValueChange = { onInput(it) },
                     singleLine = true,
-                    placeholder = { Text("既有或新建") },
+                    placeholder = { Text("existing or new") },
                     trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(showMenu) },
                     enabled = enabled,
                     modifier = Modifier.menuAnchor().fillMaxWidth(),
@@ -190,21 +191,9 @@ private fun ContainerSection(
                     onDismissRequest = { expanded = false },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    state.suggestions.forEach { name ->
+                    containerState.suggestions.forEach { name ->
                         DropdownMenuItem(
-                            text = {
-                                val tag = when {
-                                    name in state.remote -> "remote"
-                                    name in state.history -> "recent"
-                                    else -> ""
-                                }
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Text(name, fontFamily = FontFamily.Monospace)
-                                    if (tag.isNotEmpty()) {
-                                        Text(tag, style = MaterialTheme.typography.labelSmall)
-                                    }
-                                }
-                            },
+                            text = { Text(name, fontFamily = FontFamily.Monospace) },
                             onClick = {
                                 onSelect(name)
                                 expanded = false
@@ -214,23 +203,23 @@ private fun ContainerSection(
                 }
             }
 
-            val typed = state.current.trim()
-            val typedIsNew = typed.isNotEmpty() && typed !in state.remote
+            val typed = containerState.current.trim()
+            val typedIsNew = typed.isNotEmpty() && typed !in containerState.remote
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
                     onClick = { onSelect(typed) },
-                    enabled = enabled && typed.isNotEmpty() && typed in state.remote,
-                ) { Text("使用") }
+                    enabled = enabled && typed.isNotEmpty() && typed in containerState.remote,
+                ) { Text("Use") }
                 OutlinedButton(
                     onClick = { onCreate(typed) },
-                    enabled = enabled && typedIsNew && !state.loading,
-                ) { Text("新建") }
+                    enabled = enabled && typedIsNew && !containerState.loading,
+                ) { Text("Create") }
             }
 
-            state.refreshError?.let {
+            containerState.refreshError?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
-            state.notice?.let {
+            containerState.notice?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall)
             }
         }
@@ -247,7 +236,7 @@ private fun CardsSection(
     onCancel: (Int?, Uri) -> Unit,
     buildPickerIntent: () -> android.content.Intent?,
 ) {
-    Text("記憶卡", style = MaterialTheme.typography.titleMedium)
+    Text("Memory Card", style = MaterialTheme.typography.titleMedium)
     if (cards.isEmpty()) {
         EmptyCardsHint(onPickTree)
         return
@@ -264,7 +253,7 @@ private fun CardsSection(
 private fun EmptyCardsHint(onPickTree: (Int?, Uri) -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("尚未偵測到記憶卡。")
+            Text("No memory card detected.")
             AddAnyTreeButton(onPickTree)
         }
     }
@@ -276,7 +265,7 @@ private fun AddAnyTreeButton(onPickTree: (Int?, Uri) -> Unit) {
         ActivityResultContracts.OpenDocumentTree(),
     ) { uri -> if (uri != null) onPickTree(null, uri) }
     OutlinedButton(onClick = { launcher.launch(null) }) {
-        Text("手動選擇來源…")
+        Text("Pick source…")
     }
 }
 
@@ -320,11 +309,11 @@ private fun CardItem(
             }
             if (card.treeUri == null) {
                 Text(
-                    "請選擇此卡根目錄（只需一次）。",
+                    "Grant access to this card's root (one-time).",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 OutlinedButton(onClick = ::launchPicker) {
-                    Text("授權")
+                    Text("Grant")
                 }
                 return@Column
             }
@@ -332,19 +321,19 @@ private fun CardItem(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(modifier = Modifier.height(16.dp))
                     Spacer(Modifier.padding(4.dp))
-                    Text("掃描中…")
+                    Text("Scanning…")
                 }
                 return@Column
             }
             card.planError?.let {
-                Text("掃描失敗：$it", color = MaterialTheme.colorScheme.error)
+                Text("Scan failed: $it", color = MaterialTheme.colorScheme.error)
                 OutlinedButton(onClick = { onReplan(card.device?.deviceId, card.treeUri) }) {
-                    Text("重試掃描")
+                    Text("Retry")
                 }
                 return@Column
             }
             val plan = card.plan ?: return@Column
-            Text("計畫", style = MaterialTheme.typography.titleSmall)
+            Text("Plan", style = MaterialTheme.typography.titleSmall)
             Text(
                 "${plan.fileCount} files · ${formatSize(plan.totalBytes)}",
                 style = MaterialTheme.typography.bodyMedium,
@@ -367,21 +356,21 @@ private fun CardItem(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (running) {
                     OutlinedButton(onClick = { onPause(card.device?.deviceId, card.treeUri) }) {
-                        Text("暫停")
+                        Text("Pause")
                     }
                     OutlinedButton(
                         onClick = { onCancel(card.device?.deviceId, card.treeUri) },
                         colors = ButtonDefaults.outlinedButtonColors(
                             contentColor = MaterialTheme.colorScheme.error,
                         ),
-                    ) { Text("取消") }
+                    ) { Text("Cancel") }
                 } else {
                     Button(
                         onClick = { onStart(card.device?.deviceId, card.treeUri, StartMode.RESUME) },
-                    ) { Text(if (card.progress == null) "開始上傳" else "繼續上傳") }
+                    ) { Text(if (card.progress == null) "Start" else "Resume") }
                     OutlinedButton(
                         onClick = { onStart(card.device?.deviceId, card.treeUri, StartMode.RESTART) },
-                    ) { Text("從頭開始") }
+                    ) { Text("Restart") }
                 }
             }
         }
