@@ -92,7 +92,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val last = containerRepo.getLast(cfg.id)
             val history = containerRepo.history(cfg.id)
             _container.value = _container.value.copy(
-                current = (last ?: cfg.container).ifBlank { cfg.container },
+                current = last ?: "",
                 history = history,
             )
             refreshRemoteContainers()
