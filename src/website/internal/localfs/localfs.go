@@ -36,8 +36,61 @@ func New(root string) *FS { return &FS{Root: root} }
 //
 // Layout: <root>/<container>/<blob name>
 // The blob name may contain '/' which is preserved as subdirectories.
-func (f *FS) LocalPath(containerName, blobName string) string {
-	return filepath.Join(f.Root, containerName, blobName)
+func (f *FS) LocalPath(containerName, blobName string) (string, error) {
+	if containerName == "" || blobName == "" {
+		return "", errors.New("container and blob names are required")
+	}
+	if strings.Contains(blobName, "\\") {
+		return "", errors.New("blob name contains an unsafe path separator")
+	}
+	root := filepath.Clean(f.Root)
+	base := filepath.Join(root, containerName)
+	containerRelative, err := filepath.Rel(root, base)
+	if err != nil {
+		return "", fmt.Errorf("resolve container path: %w", err)
+	}
+	if containerRelative == "." || containerRelative == ".." ||
+		strings.Contains(containerRelative, string(filepath.Separator)) {
+		return "", errors.New("container name escapes the download root")
+	}
+	target := filepath.Join(base, filepath.FromSlash(blobName))
+	relative, err := filepath.Rel(base, target)
+	if err != nil {
+		return "", fmt.Errorf("resolve local path: %w", err)
+	}
+	if relative == "." || relative == ".." ||
+		strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", errors.New("blob name escapes its container directory")
+	}
+	if err := rejectSymlinkComponents(base, relative); err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
+func rejectSymlinkComponents(root, relative string) error {
+	current := filepath.Clean(root)
+	if info, err := os.Lstat(current); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("container directory is a symlink")
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect container directory: %w", err)
+	}
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("inspect local path: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("local path contains symlink component %q", component)
+		}
+	}
+	return nil
 }
 
 // SkipDecision describes whether a blob is already on disk.
@@ -79,6 +132,43 @@ func (f *FS) ShouldSkip(localPath string, remoteSize int64, mtimeMeta string) Sk
 		return SkipDecision{Skip: true, Reason: "size matches; mtime via sidecar"}
 	}
 	return SkipDecision{Skip: false, Reason: "mtime differs"}
+}
+
+// VerifyForDeletion is deliberately stricter than ShouldSkip: a sidecar can
+// preserve sync idempotency, but it cannot prove that an external process did
+// not later modify a same-size file.
+func (f *FS) VerifyForDeletion(
+	localPath string,
+	remoteSize int64,
+	mtimeMeta string,
+) SkipDecision {
+	st, err := os.Stat(localPath)
+	if err != nil {
+		return SkipDecision{Skip: false, Reason: "no local copy"}
+	}
+	if st.IsDir() {
+		return SkipDecision{Skip: false, Reason: "local path is a directory"}
+	}
+	if st.Size() != remoteSize {
+		return SkipDecision{Skip: false, Reason: "size differs"}
+	}
+	if mtimeMeta == "" {
+		return SkipDecision{Skip: false, Reason: "no mtime metadata"}
+	}
+	wantMs, err := strconv.ParseInt(mtimeMeta, 10, 64)
+	if err != nil {
+		return SkipDecision{Skip: false, Reason: "mtime metadata not int"}
+	}
+	if st.ModTime().UnixMilli() != wantMs {
+		if side, ok := readSidecar(localPath); ok && side == wantMs {
+			return SkipDecision{
+				Skip:   false,
+				Reason: "filesystem mtime differs; sidecar-only verification cannot authorize cloud deletion",
+			}
+		}
+		return SkipDecision{Skip: false, Reason: "mtime differs"}
+	}
+	return SkipDecision{Skip: true, Reason: "size and filesystem mtime match"}
 }
 
 // WriteAtomic downloads via writeFn into <localPath>.part, fsyncs, renames to

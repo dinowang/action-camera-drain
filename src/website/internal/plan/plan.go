@@ -3,6 +3,8 @@
 package plan
 
 import (
+	"fmt"
+
 	"github.com/dinowang/action-camera-drain/src/website/internal/azblob"
 	"github.com/dinowang/action-camera-drain/src/website/internal/localfs"
 )
@@ -39,11 +41,18 @@ type Summary struct {
 }
 
 // Build computes the diff for one container.
-func Build(fs *localfs.FS, containerName string, blobs []azblob.BlobInfo) (Summary, []Item) {
+func Build(
+	fs *localfs.FS,
+	containerName string,
+	blobs []azblob.BlobInfo,
+) (Summary, []Item, error) {
 	sum := Summary{Container: containerName, RemoteCount: len(blobs)}
 	items := make([]Item, 0, len(blobs))
 	for _, b := range blobs {
-		local := fs.LocalPath(containerName, b.Name)
+		local, err := fs.LocalPath(containerName, b.Name)
+		if err != nil {
+			return Summary{}, nil, fmt.Errorf("unsafe blob path %q: %w", b.Name, err)
+		}
 		mtimeStr := b.Metadata["mtime"]
 		dec := fs.ShouldSkip(local, b.Size, mtimeStr)
 		item := Item{
@@ -64,7 +73,7 @@ func Build(fs *localfs.FS, containerName string, blobs []azblob.BlobInfo) (Summa
 		}
 		items = append(items, item)
 	}
-	return sum, items
+	return sum, items, nil
 }
 
 func parseMillis(s string) int64 {

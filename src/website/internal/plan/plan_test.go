@@ -27,7 +27,10 @@ func TestBuild_PendingAndSkipped(t *testing.T) {
 		{Name: "new.mp4", Size: 100, Metadata: map[string]string{"mtime": "1700000000000"}},
 		{Name: "no-meta.mp4", Size: 50, Metadata: map[string]string{}},
 	}
-	sum, items := Build(fs, "vids", blobs)
+	sum, items, err := Build(fs, "vids", blobs)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if sum.RemoteCount != 3 || sum.SkippedCount != 1 || sum.PendingCount != 2 {
 		t.Fatalf("summary: %+v", sum)
@@ -40,6 +43,18 @@ func TestBuild_PendingAndSkipped(t *testing.T) {
 	}
 	if items[2].Status != StatusPending {
 		t.Fatalf("no-meta.mp4 should be pending, got %q (%s)", items[2].Status, items[2].SkipReason)
+	}
+}
+
+func TestBuildRejectsBlobPathTraversal(t *testing.T) {
+	fs := localfs.New(t.TempDir())
+	_, _, err := Build(fs, "vids", []azblob.BlobInfo{{
+		Name:     "../outside.mp4",
+		Size:     1,
+		Metadata: map[string]string{"mtime": "1700000000000"},
+	}})
+	if err == nil {
+		t.Fatal("expected unsafe blob path error")
 	}
 }
 

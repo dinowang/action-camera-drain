@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/dinowang/action-camera-drain/src/website/internal/azblob"
+	"github.com/dinowang/action-camera-drain/src/website/internal/cleanup"
 	"github.com/dinowang/action-camera-drain/src/website/internal/config"
 	"github.com/dinowang/action-camera-drain/src/website/internal/httpd"
 	"github.com/dinowang/action-camera-drain/src/website/internal/job"
@@ -38,8 +39,9 @@ func main() {
 	}
 
 	mgr := job.NewManager(store, lfs, cfg.MinConcurrency, cfg.MaxConcurrency)
+	cleaner := cleanup.New(store, lfs, mgr)
 
-	srv := httpd.New(store, lfs, mgr, web.FS())
+	srv := httpd.New(store, lfs, mgr, cleaner, web.FS())
 	httpSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.HTTPPort),
 		Handler:           srv.Handler(),

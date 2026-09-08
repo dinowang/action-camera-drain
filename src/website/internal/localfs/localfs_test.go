@@ -12,10 +12,42 @@ import (
 
 func TestLocalPath(t *testing.T) {
 	f := New("/data")
-	got := f.LocalPath("videos", "device-x/Camera01/clip.mp4")
+	got, err := f.LocalPath("videos", "device-x/Camera01/clip.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := filepath.Join("/data", "videos", "device-x/Camera01/clip.mp4")
 	if got != want {
 		t.Fatalf("LocalPath: got %q want %q", got, want)
+	}
+}
+
+func TestLocalPathRejectsTraversal(t *testing.T) {
+	f := New("/data")
+	if _, err := f.LocalPath("../outside", "clip.mp4"); err == nil {
+		t.Fatal("expected container traversal to be rejected")
+	}
+	if _, err := f.LocalPath("videos", "../other/clip.mp4"); err == nil {
+		t.Fatal("expected traversal to be rejected")
+	}
+	if _, err := f.LocalPath("videos", `..\other\clip.mp4`); err == nil {
+		t.Fatal("expected backslash traversal to be rejected")
+	}
+}
+
+func TestLocalPathRejectsSymlinkComponent(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	containerDir := filepath.Join(root, "videos")
+	if err := os.MkdirAll(containerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(containerDir, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := New(root).LocalPath("videos", "link/clip.mp4"); err == nil {
+		t.Fatal("expected symlink component to be rejected")
 	}
 }
 
@@ -104,6 +136,24 @@ func TestShouldSkip_SidecarMismatch(t *testing.T) {
 	dec := f.ShouldSkip(p, 5, "222")
 	if dec.Skip {
 		t.Fatalf("sidecar with different value must not cause skip")
+	}
+}
+
+func TestVerifyForDeletionRejectsSidecarFallback(t *testing.T) {
+	d := t.TempDir()
+	p := filepath.Join(d, "changed.mp4")
+	if err := os.WriteFile(p, []byte("12345"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantMs := int64(1700000000000)
+	if err := writeSidecar(p, wantMs); err != nil {
+		t.Fatal(err)
+	}
+
+	decision := New(d).VerifyForDeletion(p, 5, strconv.FormatInt(wantMs, 10))
+
+	if decision.Skip {
+		t.Fatal("sidecar alone must not authorize destructive cloud cleanup")
 	}
 }
 

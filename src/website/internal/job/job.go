@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -129,20 +130,28 @@ type Manager struct {
 	minCon int
 	maxCon int
 
-	mu   sync.Mutex
-	jobs map[string]*Job
-	seq  uint64
+	mu               sync.Mutex
+	jobs             map[string]*Job
+	seq              uint64
+	activeAll        int
+	activeContainers map[string]int
+	deleting         map[string]bool
 }
 
 func NewManager(store azblob.Storage, fs *localfs.FS, minCon, maxCon int) *Manager {
 	return &Manager{
-		store:  store,
-		fs:     fs,
-		minCon: minCon,
-		maxCon: maxCon,
-		jobs:   map[string]*Job{},
+		store:            store,
+		fs:               fs,
+		minCon:           minCon,
+		maxCon:           maxCon,
+		jobs:             map[string]*Job{},
+		activeContainers: map[string]int{},
+		deleting:         map[string]bool{},
 	}
 }
+
+// ErrOperationConflict means a download and deletion target overlap.
+var ErrOperationConflict = errors.New("container operation conflicts with an active job")
 
 // Get returns a job by ID, or nil.
 func (m *Manager) Get(id string) *Job {
@@ -170,7 +179,12 @@ func (m *Manager) Cancel(id string) bool {
 // Start kicks off a new job covering the specified containers (or "*" = all).
 // Returns the job; events stream via Subscribe.
 func (m *Manager) Start(ctx context.Context, containers []string) (*Job, error) {
+	targets := normalizeTargets(containers)
 	m.mu.Lock()
+	if err := m.reserveJobLocked(targets); err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
 	m.seq++
 	id := fmt.Sprintf("job-%d-%d", time.Now().Unix(), m.seq)
 	j := newJob(id)
@@ -179,8 +193,95 @@ func (m *Manager) Start(ctx context.Context, containers []string) (*Job, error) 
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	j.cancel = cancel
-	go m.run(runCtx, j, containers)
+	go func() {
+		defer m.releaseJob(targets)
+		m.run(runCtx, j, targets)
+	}()
 	return j, nil
+}
+
+// ReserveDeletion blocks overlapping Catch downloads and other deletions until
+// the returned release function is called.
+func (m *Manager) ReserveDeletion(containerName string) (func(), error) {
+	if containerName == "" {
+		return nil, errors.New("container name is required")
+	}
+	m.mu.Lock()
+	if m.activeAll > 0 || m.activeContainers[containerName] > 0 || m.deleting[containerName] {
+		m.mu.Unlock()
+		return nil, ErrOperationConflict
+	}
+	m.deleting[containerName] = true
+	m.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.mu.Lock()
+			delete(m.deleting, containerName)
+			m.mu.Unlock()
+		})
+	}, nil
+}
+
+func (m *Manager) reserveJobLocked(targets []string) error {
+	if len(targets) == 1 && targets[0] == "*" {
+		if len(m.deleting) > 0 {
+			return ErrOperationConflict
+		}
+		m.activeAll++
+		return nil
+	}
+	for _, target := range targets {
+		if m.deleting[target] {
+			return ErrOperationConflict
+		}
+	}
+	for _, target := range targets {
+		m.activeContainers[target]++
+	}
+	return nil
+}
+
+func (m *Manager) releaseJob(targets []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(targets) == 1 && targets[0] == "*" {
+		m.activeAll--
+		return
+	}
+	for _, target := range targets {
+		m.activeContainers[target]--
+		if m.activeContainers[target] <= 0 {
+			delete(m.activeContainers, target)
+		}
+	}
+}
+
+func normalizeTargets(containers []string) []string {
+	if len(containers) == 0 {
+		return []string{"*"}
+	}
+	seen := make(map[string]struct{}, len(containers))
+	targets := make([]string, 0, len(containers))
+	for _, containerName := range containers {
+		if containerName == "*" {
+			return []string{"*"}
+		}
+		if containerName == "" {
+			continue
+		}
+		if _, ok := seen[containerName]; ok {
+			continue
+		}
+		seen[containerName] = struct{}{}
+		targets = append(targets, containerName)
+	}
+	if len(targets) == 0 {
+		return []string{"*"}
+	}
+	sort.Strings(targets)
+	return targets
 }
 
 func (m *Manager) run(ctx context.Context, j *Job, requestedContainers []string) {
@@ -210,7 +311,11 @@ func (m *Manager) run(ctx context.Context, j *Job, requestedContainers []string)
 			m.finish(j, StateFailed, "list blobs in "+c+": "+err.Error())
 			return
 		}
-		_, items := plan.Build(m.fs, c, blobs)
+		_, items, err := plan.Build(m.fs, c, blobs)
+		if err != nil {
+			m.finish(j, StateFailed, "plan blobs in "+c+": "+err.Error())
+			return
+		}
 		for _, it := range items {
 			if it.Status == plan.StatusSkipped {
 				j.emit(Event{

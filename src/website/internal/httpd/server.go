@@ -4,12 +4,15 @@ package httpd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/dinowang/action-camera-drain/src/website/internal/azblob"
+	"github.com/dinowang/action-camera-drain/src/website/internal/cleanup"
 	"github.com/dinowang/action-camera-drain/src/website/internal/job"
 	"github.com/dinowang/action-camera-drain/src/website/internal/localfs"
 	"github.com/dinowang/action-camera-drain/src/website/internal/plan"
@@ -20,11 +23,18 @@ type Server struct {
 	store    azblob.Storage
 	fs       *localfs.FS
 	jobs     *job.Manager
+	cleanup  *cleanup.Service
 	frontend fs.FS // embedded "web" filesystem
 }
 
-func New(store azblob.Storage, lfs *localfs.FS, mgr *job.Manager, frontend fs.FS) *Server {
-	return &Server{store: store, fs: lfs, jobs: mgr, frontend: frontend}
+func New(
+	store azblob.Storage,
+	lfs *localfs.FS,
+	mgr *job.Manager,
+	cleaner *cleanup.Service,
+	frontend fs.FS,
+) *Server {
+	return &Server{store: store, fs: lfs, jobs: mgr, cleanup: cleaner, frontend: frontend}
 }
 
 // Handler returns the root mux.
@@ -75,7 +85,11 @@ func (s *Server) handleContainers(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
-		sum, _ := plan.Build(s.fs, c, blobs)
+		sum, _, err := plan.Build(s.fs, c, blobs)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
 		out = append(out, containerSummary{
 			Name:         sum.Container,
 			RemoteCount:  sum.RemoteCount,
@@ -98,24 +112,38 @@ type blobView struct {
 }
 
 func (s *Server) handleContainerBlobs(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	// Path: /api/containers/{name}/blobs
 	path := strings.TrimPrefix(r.URL.Path, "/api/containers/")
 	parts := strings.SplitN(path, "/", 2)
-	if len(parts) < 2 || parts[1] != "blobs" {
-		http.NotFound(w, r)
+	containerName, err := url.PathUnescape(parts[0])
+	if err != nil || containerName == "" || strings.Contains(containerName, "/") {
+		http.Error(w, "invalid container name", http.StatusBadRequest)
 		return
 	}
-	containerName := parts[0]
+	switch {
+	case len(parts) == 2 && parts[1] == "blobs" && r.Method == http.MethodGet:
+		s.handleContainerBlobList(w, r, containerName)
+	case len(parts) == 1 && r.Method == http.MethodDelete:
+		s.handleDeleteContainer(w, r, containerName)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *Server) handleContainerBlobList(
+	w http.ResponseWriter,
+	r *http.Request,
+	containerName string,
+) {
 	blobs, err := s.store.ListBlobs(r.Context(), containerName)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	_, items := plan.Build(s.fs, containerName, blobs)
+	_, items, err := plan.Build(s.fs, containerName, blobs)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
 	out := make([]blobView, 0, len(items))
 	for _, it := range items {
 		out = append(out, blobView{
@@ -127,6 +155,41 @@ func (s *Server) handleContainerBlobs(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleDeleteContainer(
+	w http.ResponseWriter,
+	r *http.Request,
+	containerName string,
+) {
+	result, err := s.cleanup.DeleteContainer(r.Context(), containerName)
+	if err == nil {
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+
+	var verificationErr *cleanup.VerificationError
+	switch {
+	case errors.As(err, &verificationErr):
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":    verificationErr.Error(),
+			"failures": verificationErr.Failures,
+		})
+	case errors.Is(err, cleanup.ErrRemoteChanged):
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "Remote container changed during verification. Nothing was deleted.",
+		})
+	case errors.Is(err, cleanup.ErrContainerNotEmpty):
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "Verified blobs were deleted, but new remote content appeared. The container was retained.",
+		})
+	case errors.Is(err, job.ErrOperationConflict):
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "The container is busy with another Catch operation.",
+		})
+	default:
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+	}
 }
 
 // ----- jobs -----------------------------------------------------------------
@@ -151,6 +214,10 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 	}
 	j, err := s.jobs.Start(context.Background(), req.Containers)
 	if err != nil {
+		if errors.Is(err, job.ErrOperationConflict) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

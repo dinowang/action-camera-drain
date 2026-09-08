@@ -10,7 +10,9 @@ import (
 	"io"
 	"strings"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	sdkazblob "github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/service"
 
@@ -22,6 +24,7 @@ type BlobInfo struct {
 	Name       string
 	Size       int64
 	ContentMD5 []byte
+	ETag       string
 	// Metadata keys are always lower-cased so callers can do
 	// `m["mtime"]` without worrying about how the server returned them.
 	Metadata map[string]string
@@ -34,6 +37,8 @@ type Storage interface {
 	ListContainers(ctx context.Context) ([]string, error)
 	ListBlobs(ctx context.Context, containerName string) ([]BlobInfo, error)
 	Download(ctx context.Context, containerName, blobName string, w io.Writer) error
+	DeleteBlobIfMatch(ctx context.Context, containerName, blobName, etag string) error
+	DeleteContainer(ctx context.Context, containerName string) error
 }
 
 // Client is the production implementation backed by the Azure SDK.
@@ -106,6 +111,9 @@ func (c *Client) ListBlobs(ctx context.Context, containerName string) ([]BlobInf
 				if b.Properties.ContentMD5 != nil {
 					info.ContentMD5 = append([]byte(nil), b.Properties.ContentMD5...)
 				}
+				if b.Properties.ETag != nil {
+					info.ETag = string(*b.Properties.ETag)
+				}
 			}
 			for k, v := range b.Metadata {
 				if v == nil {
@@ -131,6 +139,42 @@ func (c *Client) Download(ctx context.Context, containerName, blobName string, w
 	defer body.Close()
 	if _, err := io.Copy(w, body); err != nil {
 		return fmt.Errorf("copy %s/%s: %w", containerName, blobName, err)
+	}
+	return nil
+}
+
+// DeleteBlobIfMatch removes a verified blob only if it still has the listed ETag.
+func (c *Client) DeleteBlobIfMatch(
+	ctx context.Context,
+	containerName string,
+	blobName string,
+	etag string,
+) error {
+	if etag == "" {
+		return fmt.Errorf("delete blob %s/%s: missing ETag", containerName, blobName)
+	}
+	bc := c.svc.NewContainerClient(containerName).NewBlobClient(blobName)
+	etagValue := azcore.ETag(etag)
+	deleteSnapshots := blob.DeleteSnapshotsOptionTypeInclude
+	_, err := bc.Delete(ctx, &blob.DeleteOptions{
+		DeleteSnapshots: &deleteSnapshots,
+		AccessConditions: &blob.AccessConditions{
+			ModifiedAccessConditions: &blob.ModifiedAccessConditions{
+				IfMatch: &etagValue,
+			},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("delete verified blob %s/%s: %w", containerName, blobName, err)
+	}
+	return nil
+}
+
+// DeleteContainer marks the container and all blobs within it for deletion.
+func (c *Client) DeleteContainer(ctx context.Context, containerName string) error {
+	cc := c.svc.NewContainerClient(containerName)
+	if _, err := cc.Delete(ctx, nil); err != nil {
+		return fmt.Errorf("delete container %s: %w", containerName, err)
 	}
 	return nil
 }

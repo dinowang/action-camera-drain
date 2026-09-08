@@ -38,7 +38,15 @@ async function loadContainers() {
       <td class="num"><span class="state pending">${c.pendingCount}</span></td>
       <td class="num"><span class="state skipped">${c.skippedCount}</span></td>
       <td class="num">${fmtBytes(c.pendingBytes)}</td>
-      <td><button data-action="sync" data-name="${c.name}">同步</button></td>
+      <td>
+        <button data-action="sync" data-name="${c.name}">同步</button>
+        <button
+          data-action="delete-cloud"
+          data-name="${c.name}"
+          class="danger"
+          ${c.pendingCount === 0 ? "" : 'disabled title="仍有檔案尚未在 NAS 完整驗證"'}
+        >刪除雲端</button>
+      </td>
     `;
     tbody.appendChild(tr);
   }
@@ -121,6 +129,43 @@ async function startJob(containers) {
   es.onerror = () => { /* server closed — handled by job-done */ };
 }
 
+async function deleteCloudContainer(btn) {
+  const container = btn.dataset.name;
+  const confirmed = window.confirm(
+    `確定要永久刪除 Azure container「${container}」及其中所有檔案嗎？\n\n` +
+    "Catch 會先重新驗證 NAS 上的每個檔案；驗證未通過時不會刪除。"
+  );
+  if (!confirmed) return;
+
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "驗證中…";
+  try {
+    const r = await fetch(`/api/containers/${encodeURIComponent(container)}`, {
+      method: "DELETE",
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const failures = Array.isArray(body.failures)
+        ? `\n${body.failures.slice(0, 3).map((f) => `${f.blob}: ${f.reason}`).join("\n")}`
+        : "";
+      throw new Error((body.error ?? `HTTP ${r.status}`) + failures);
+    }
+    alert(
+      `已刪除 Azure container「${container}」。\n` +
+      `刪除前已驗證 ${body.verifiedFiles} 個檔案（${fmtBytes(body.verifiedBytes)}）。`
+    );
+    if ($("#blobs-title").textContent === `📁 ${container}`) {
+      $("#blobs-section").hidden = true;
+    }
+    await loadContainers();
+  } catch (err) {
+    alert(`刪除失敗：${err.message}`);
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
 function log(text) {
   const li = document.createElement("li");
   li.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
@@ -134,6 +179,11 @@ document.addEventListener("click", (e) => {
   if (btn?.dataset.action === "sync") {
     e.stopPropagation();
     startJob([btn.dataset.name]);
+    return;
+  }
+  if (btn?.dataset.action === "delete-cloud") {
+    e.stopPropagation();
+    deleteCloudContainer(btn);
     return;
   }
   const row = e.target.closest("tr[data-name]");

@@ -22,7 +22,7 @@ Azure Blob Storage  →  Catch (web service)  →  NAS volume
 
 ### 1. 準備憑證
 
-二選一（**SAS 必須是 account-level**，並具備 List Containers 權限；service SAS 不夠）：
+二選一（**SAS 必須是 account-level**；service SAS 不夠）：
 
 ```bash
 # Mode A: 連線字串
@@ -30,8 +30,11 @@ export AZURE_STORAGE_CONNECTION_STRING='DefaultEndpointsProtocol=https;AccountNa
 
 # Mode B: 帳戶 + SAS
 export AZURE_STORAGE_ACCOUNT_NAME='mystorage'
-export AZURE_STORAGE_SAS_TOKEN='sv=2024-08-04&ss=b&srt=sco&sp=rl&...'
+export AZURE_STORAGE_SAS_TOKEN='sv=2024-08-04&ss=b&srt=sco&sp=rld&...'
 ```
+
+一般下載只需要 read/list；若要使用「刪除雲端」功能，SAS 還必須包含 delete
+permission（`sp` 包含 `d`）以及 container resource type。
 
 ### 2. 本地跑
 
@@ -103,6 +106,7 @@ services:
 | `GET` | `/healthz` | 健康檢查 |
 | `GET` | `/api/containers` | 列容器 + 每個容器的 remote / pending / skipped 計數 |
 | `GET` | `/api/containers/{c}/blobs` | 列 blob：name / size / mtime / status |
+| `DELETE` | `/api/containers/{c}` | 重新驗證 NAS 副本後，刪除整個 Azure container |
 | `POST` | `/api/jobs` | body: `{ "containers": ["foo"] }` 或 `{ "containers": ["*"] }`；回 `{ "id": "..." }` |
 | `GET` | `/api/jobs/{id}/events` | SSE：`job-start` / `file-start` / `file-skip` / `file-done` / `file-failed` / `concurrency` / `job-done` |
 | `DELETE` | `/api/jobs/{id}` | 取消 |
@@ -115,9 +119,32 @@ curl -X POST -H 'Content-Type: application/json' \
   http://nas.lan:8080/api/jobs
 ```
 
+## 刪除雲端 container
+
+Container 列表只有在所有遠端檔案目前都能於 NAS 以 size + metadata `mtime` 驗證時，
+才會啟用「刪除雲端」。按下後仍會由伺服器重新執行完整驗證，不能以網頁上次載入的
+狀態或前一個下載 job 的結果取代。
+
+刪除驗證刻意比一般同步 skip 更嚴格：檔案系統實際 mtime 必須吻合；只有
+`.actr-mtime` sidecar 而檔案 mtime 不符時，仍會拒絕刪除，避免 NAS 檔案被外部程式
+改寫後誤刪唯一的雲端副本。
+
+安全流程：
+
+1. 暫停該 container 與 Catch 內其他重疊操作。
+2. 重新列出全部 blobs，逐檔驗證 NAS 副本。
+3. 再次列出遠端 snapshot；名稱、size、mtime、ETag 或 Content-MD5 有變更就中止。
+4. 以每個 blob 的 ETag 作為 `If-Match` 條件逐一刪除；任一 blob 被覆寫就立即停止。
+5. 再次確認 container 已空，才刪除 container 本身。
+
+本地 container 目錄、影片與 `.actr-mtime` sidecar 不會被刪除。若 Drain 或其他程式
+仍可同時寫入相同 container，執行刪除時仍應避免啟動新的上傳；Azure 不提供能將
+container 內容在驗證與刪除之間完全凍結的 transaction。Catch 已用條件式 blob
+刪除與刪除前空 container 檢查縮小競爭窗口；操作期間仍不應讓其他 writer 上傳。
+
 ## 限制 / 已知事項
 
-- **不刪雲端**：下載完成不會刪除 Blob（雲端是備援來源）。
+- **刪除需明確操作**：下載完成不會自動刪除；必須按下「刪除雲端」並確認。
 - **不做 resume**：依規格，下載失敗就抹除 `.part` 整檔重抓。
 - **無內建排程**：靠 NAS 的 cron / Task Scheduler 從外部呼叫 API。
 - **無 Auth**：預設信任 NAS 內網；如需公開請套 reverse proxy + Basic Auth。
