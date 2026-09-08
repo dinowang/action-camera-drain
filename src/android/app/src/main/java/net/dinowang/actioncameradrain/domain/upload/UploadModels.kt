@@ -27,6 +27,7 @@ data class UploadProgress(
     enum class State { IDLE, RUNNING, COMPLETED, FAILED, CANCELLED }
 }
 
+@kotlinx.serialization.Serializable
 enum class StartMode {
     /** Resume from existing checkpoints; skip already-uploaded blocks. */
     RESUME,

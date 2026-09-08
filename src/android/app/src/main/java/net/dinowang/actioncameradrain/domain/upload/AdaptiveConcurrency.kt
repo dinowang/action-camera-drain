@@ -83,8 +83,10 @@ class AdaptiveConcurrency(
     private var lastAction: Int = +1
 
     val currentTarget: Int get() = gate.currentTarget
+    val workerCapacity: Int get() = max
 
     fun tick(currentBps: Double) {
+        if (currentBps <= 0.0) return
         val cur = gate.currentTarget
         val improved = lastBps == 0.0 || currentBps > lastBps * 1.05
         val regressed = lastBps > 0 && currentBps < lastBps * 0.85

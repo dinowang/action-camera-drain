@@ -1,10 +1,7 @@
 package net.dinowang.actioncameradrain.domain.upload
 
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
@@ -14,8 +11,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
-import net.dinowang.actioncameradrain.data.storage.AzureBlobClient
 import net.dinowang.actioncameradrain.domain.filing.IngestPlan
 import net.dinowang.actioncameradrain.domain.filing.MediaFile
 import net.dinowang.actioncameradrain.domain.filing.PlannedItem
@@ -34,16 +31,17 @@ import java.io.InputStream
  *     and marks affected files FAILED; resume() can pick them up later
  */
 class UploadEngine(
-    private val client: AzureBlobClient,
+    private val client: BlobUploadClient,
     private val container: String,
-    private val checkpoints: CheckpointStore,
+    private val checkpoints: UploadCheckpointRepository,
     private val scope: CheckpointStore.ScopeKey,
     private val blockSize: Int = DEFAULT_BLOCK_SIZE,
     private val maxRetries: Int = 2,
     private val concurrency: AdaptiveConcurrency = AdaptiveConcurrency(),
+    private val bandwidthLimiter: BandwidthLimiter = BandwidthLimiter.Unlimited,
+    private val ownershipId: String? = null,
 ) {
 
-    private val coroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val tracker = ThroughputTracker()
 
     private val _progress = MutableStateFlow(
@@ -54,35 +52,27 @@ class UploadEngine(
     private val _fileStatus = MutableStateFlow<Map<String, FileUploadStatus>>(emptyMap())
     val fileStatus: StateFlow<Map<String, FileUploadStatus>> = _fileStatus.asStateFlow()
 
-    @Volatile private var job: Job? = null
     @Volatile private var cardLost: Boolean = false
 
-    /** Start (or resume) uploading [plan]. Returns immediately; observe [progress]. */
-    fun start(plan: IngestPlan, mode: StartMode) {
-        if (job?.isActive == true) return
+    /** Executes [plan] in the caller's coroutine; cancelling the caller pauses the transfer. */
+    suspend fun execute(plan: IngestPlan, mode: StartMode): UploadProgress.State {
         cardLost = false
-        job = coroutineScope.launch { run(plan, mode) }
-    }
-
-    fun cancel() {
-        job?.cancel()
+        return run(plan, mode)
     }
 
     /** Called by the USB watcher when the card disappears. */
     fun reportCardLost() {
         cardLost = true
-        cancel()
     }
 
-    private suspend fun run(plan: IngestPlan, mode: StartMode) {
+    private suspend fun run(plan: IngestPlan, mode: StartMode): UploadProgress.State = coroutineScope {
         val totalBytes = plan.items.sumOf { it.file.sizeBytes }
         val doneBytes = java.util.concurrent.atomic.AtomicLong(0)
         val doneFiles = java.util.concurrent.atomic.AtomicInteger(0)
         val failedFiles = java.util.concurrent.atomic.AtomicInteger(0)
 
         if (mode == StartMode.RESTART) {
-            val existing = checkpoints.listForScope(scope)
-            for (cp in existing) runCatching { client.deleteBlob(container, cp.blobName) }
+            for (item in plan.items) client.deleteBlob(container, item.blobName)
             checkpoints.deleteAllForScope(scope)
         }
 
@@ -90,9 +80,9 @@ class UploadEngine(
         emit(plan, doneBytes.get(), doneFiles.get(), failedFiles.get(), totalBytes, UploadProgress.State.RUNNING)
 
         // Throughput sampler — emits an updated progress snapshot every second.
-        val sampler = coroutineScope.launch {
+        val sampler = launch {
             while (isActive) {
-                delay(1_000)
+                delay(PROGRESS_SAMPLE_INTERVAL_MS)
                 val bps = tracker.sampleAndReset()
                 concurrency.tick(bps)
                 emit(plan, doneBytes.get(), doneFiles.get(), failedFiles.get(), totalBytes, UploadProgress.State.RUNNING)
@@ -104,42 +94,52 @@ class UploadEngine(
         workCh.close()
 
         try {
-            kotlinx.coroutines.coroutineScope {
-                val workers = (1..concurrency.gate.currentTarget.coerceAtLeast(1) * 2)
-                    .map {
-                        async {
-                            for (item in workCh) {
-                                if (cardLost || !isActive) {
-                                    _fileStatus.value = _fileStatus.value.toMutableMap().apply {
-                                        if (this[item.blobName] == FileUploadStatus.UPLOADING) {
-                                            this[item.blobName] = FileUploadStatus.FAILED
-                                        }
-                                    }
-                                    continue
-                                }
-                                concurrency.gate.acquire()
-                                try {
-                                    val before = doneBytes.get()
-                                    val ok = uploadOne(item, doneBytes)
-                                    if (ok) doneFiles.incrementAndGet() else failedFiles.incrementAndGet()
-                                    emit(plan, doneBytes.get(), doneFiles.get(), failedFiles.get(), totalBytes, UploadProgress.State.RUNNING)
-                                    tracker.add(doneBytes.get() - before)
-                                } finally {
-                                    concurrency.gate.release()
+            val workers = (1..concurrency.workerCapacity).map {
+                async {
+                    for (item in workCh) {
+                        if (cardLost || !isActive) {
+                            _fileStatus.value = _fileStatus.value.toMutableMap().apply {
+                                if (this[item.blobName] == FileUploadStatus.UPLOADING) {
+                                    this[item.blobName] = FileUploadStatus.FAILED
                                 }
                             }
+                            continue
+                        }
+                        concurrency.gate.acquire()
+                        try {
+                            val ok = uploadOne(item, doneBytes)
+                            if (ok) doneFiles.incrementAndGet() else failedFiles.incrementAndGet()
+                            emit(
+                                plan,
+                                doneBytes.get(),
+                                doneFiles.get(),
+                                failedFiles.get(),
+                                totalBytes,
+                                UploadProgress.State.RUNNING,
+                            )
+                        } finally {
+                            concurrency.gate.release()
                         }
                     }
-                workers.awaitAll()
+                }
             }
+            workers.awaitAll()
             val state = when {
                 cardLost -> UploadProgress.State.FAILED
                 failedFiles.get() > 0 -> UploadProgress.State.FAILED
                 else -> UploadProgress.State.COMPLETED
             }
             emit(plan, doneBytes.get(), doneFiles.get(), failedFiles.get(), totalBytes, state)
+            state
         } catch (e: CancellationException) {
-            emit(plan, doneBytes.get(), doneFiles.get(), failedFiles.get(), totalBytes, UploadProgress.State.CANCELLED)
+            emit(
+                plan,
+                doneBytes.get(),
+                doneFiles.get(),
+                failedFiles.get(),
+                totalBytes,
+                UploadProgress.State.CANCELLED,
+            )
             throw e
         } finally {
             sampler.cancel()
@@ -152,33 +152,60 @@ class UploadEngine(
         item: PlannedItem,
         doneBytes: java.util.concurrent.atomic.AtomicLong,
     ): Boolean = withContext(Dispatchers.IO) {
-        // Skip-if-unchanged: if the remote blob already exists with the same
-        // size and same source mtime metadata, treat as already done.
-        val skip = runCatching { isAlreadyUploaded(item) }.getOrDefault(false)
-        if (skip) {
-            doneBytes.addAndGet(item.file.sizeBytes)
-            setStatus(item.blobName, FileUploadStatus.SKIPPED)
-            checkpoints.delete(scope, item.blobName)
-            return@withContext true
-        }
         setStatus(item.blobName, FileUploadStatus.UPLOADING)
-        var attempt = 0
-        while (attempt <= maxRetries) {
+        var probeAttempt = 0
+        while (true) {
             try {
-                doUpload(item, doneBytes)
+                val probe = probeExistingBlob(item)
+                if (probe.matches) {
+                    doneBytes.addAndGet(item.file.sizeBytes)
+                    setStatus(item.blobName, FileUploadStatus.SKIPPED)
+                    checkpoints.delete(scope, item.blobName)
+                    return@withContext true
+                }
+                break
+            } catch (e: Exception) {
+                probeAttempt++
+                if (probeAttempt > maxRetries) {
+                    setStatus(item.blobName, FileUploadStatus.FAILED)
+                    return@withContext false
+                }
+                delay(500L * probeAttempt)
+            }
+        }
+
+        var attempt = 0
+        var creditedBytes = 0L
+        while (attempt <= maxRetries) {
+            var touchedRemote = false
+            try {
+                doUpload(
+                    item = item,
+                    creditBytes = { uploaded ->
+                        creditedBytes += uploaded
+                        doneBytes.addAndGet(uploaded)
+                    },
+                    markRemoteTouched = { touchedRemote = true },
+                )
                 setStatus(item.blobName, FileUploadStatus.DONE)
                 return@withContext true
             } catch (e: CardLostException) {
                 setStatus(item.blobName, FileUploadStatus.FAILED)
                 return@withContext false
             } catch (e: CancellationException) {
-                setStatus(item.blobName, FileUploadStatus.FAILED)
+                setStatus(item.blobName, FileUploadStatus.PENDING)
                 throw e
-            } catch (e: Throwable) {
-                // Per spec: a failed in-flight file must be re-uploaded from scratch,
-                // and any remote remnants must be erased first.
-                runCatching { client.deleteBlob(container, item.blobName) }
+            } catch (e: PostCommitVerificationException) {
+                setStatus(item.blobName, FileUploadStatus.FAILED)
+                return@withContext false
+            } catch (e: Exception) {
+                if (touchedRemote && !deleteOwnedBlob(item.blobName)) {
+                    setStatus(item.blobName, FileUploadStatus.FAILED)
+                    return@withContext false
+                }
                 checkpoints.delete(scope, item.blobName)
+                doneBytes.addAndGet(-creditedBytes)
+                creditedBytes = 0L
                 attempt++
                 if (attempt > maxRetries) {
                     setStatus(item.blobName, FileUploadStatus.FAILED)
@@ -194,20 +221,27 @@ class UploadEngine(
      * True when the remote blob exists with identical size and identical
      * source mtime metadata — meaning a prior committed upload is byte-equivalent
      * to the current local file and we can safely skip.
-     *
-     * Only counts a "match" if both size and mtime metadata agree. Missing
-     * metadata (e.g., blobs uploaded by an older version) → re-upload.
      */
-    private fun isAlreadyUploaded(item: PlannedItem): Boolean {
-        val props = client.headBlob(container, item.blobName) ?: return false
-        if (props.contentLength != item.file.sizeBytes) return false
-        val remoteMtime = props.metadata["mtime"]?.toLongOrNull() ?: return false
-        return remoteMtime == item.file.lastModifiedMillis
+    private fun probeExistingBlob(item: PlannedItem): ExistingBlobProbe {
+        val props = client.headBlob(container, item.blobName)
+            ?: return ExistingBlobProbe(matches = false)
+        if (props.contentLength != item.file.sizeBytes) {
+            return ExistingBlobProbe(matches = false)
+        }
+        if (item.file.lastModifiedMillis <= 0L) {
+            return ExistingBlobProbe(matches = true)
+        }
+        val remoteMtime = props.metadata["mtime"]?.toLongOrNull()
+            ?: return ExistingBlobProbe(matches = false)
+        return ExistingBlobProbe(
+            matches = remoteMtime == item.file.lastModifiedMillis,
+        )
     }
 
     private suspend fun doUpload(
         item: PlannedItem,
-        doneBytes: java.util.concurrent.atomic.AtomicLong,
+        creditBytes: (Long) -> Unit,
+        markRemoteTouched: () -> Unit,
     ) {
         val file: MediaFile = item.file
         val size = file.sizeBytes
@@ -218,18 +252,16 @@ class UploadEngine(
             existing.fileMtime == mtime &&
             existing.blockSize == blockSize
         ) {
+            markRemoteTouched()
             (existing.uploadedBlocks.size.toLong() * blockSize).coerceAtMost(size) to existing.uploadedBlocks
         } else {
             if (existing != null) {
-                // checkpoint mismatch → start over remotely as well
-                runCatching { client.deleteBlob(container, item.blobName) }
                 checkpoints.delete(scope, item.blobName)
             }
             0L to emptyList()
         }
 
-        // Pre-add bytes already on remote to the progress counter once.
-        doneBytes.addAndGet(skipBytes)
+        creditBytes(skipBytes)
 
         val uploaded = mutableListOf<String>().apply { addAll(alreadyBlocks) }
         val input = file.openInputStream()
@@ -241,45 +273,99 @@ class UploadEngine(
                 while (true) {
                     val n = readFully(stream, buf, blockSize)
                     if (n <= 0) break
-                    val blockId = AzureBlobClient.encodeBlockId(formatBlockId(blockIndex))
+                    val blockId = java.util.Base64.getEncoder()
+                        .encodeToString(formatBlockId(blockIndex).toByteArray(Charsets.UTF_8))
+                    bandwidthLimiter.awaitPermit(n)
                     client.putBlock(container, item.blobName, blockId, buf, 0, n)
+                    markRemoteTouched()
                     uploaded += blockId
                     blockIndex++
-                    doneBytes.addAndGet(n.toLong())
-                    checkpoints.save(
-                        scope,
-                        UploadCheckpoint(
-                            blobName = item.blobName,
-                            fileSize = size,
-                            fileMtime = mtime,
-                            blockSize = blockSize,
-                            uploadedBlocks = uploaded.toList(),
-                        ),
-                    )
+                    creditBytes(n.toLong())
+                    tracker.add(n.toLong())
+                    if (blockIndex == 1 ||
+                        blockIndex % CHECKPOINT_INTERVAL_BLOCKS == 0 ||
+                        n < blockSize
+                    ) {
+                        checkpoints.save(
+                            scope,
+                            UploadCheckpoint(
+                                blobName = item.blobName,
+                                fileSize = size,
+                                fileMtime = mtime,
+                                blockSize = blockSize,
+                                uploadedBlocks = uploaded.toList(),
+                            ),
+                        )
+                    }
                     if (n < blockSize) break
                 }
             }
         } catch (e: IOException) {
-            // Could be card eject; surface as CardLost.
             if (cardLost) throw CardLostException(e)
             throw e
         }
 
-        // Commit the block list.
         val contentType = guessContentType(file.name)
         val metadata = buildMap {
             if (mtime > 0L) {
-                // Azure rejects header values containing colons in some metadata
-                // tools; use epoch millis (always safe) + ISO-8601 for humans.
                 put("mtime", mtime.toString())
                 put("mtime_iso", java.time.Instant.ofEpochMilli(mtime).toString())
             }
             put("size", size.toString())
             put("source_name", sanitizeMetaValue(file.name))
+            ownershipId?.let { put("upload_id", sanitizeMetaValue(it)) }
         }
+        markRemoteTouched()
         client.putBlockList(container, item.blobName, uploaded, contentType, metadata)
-        // After successful commit the checkpoint is no longer needed.
+        verifyCommittedBlob(item)
         checkpoints.delete(scope, item.blobName)
+    }
+
+    private suspend fun verifyCommittedBlob(item: PlannedItem) {
+        var attempt = 0
+        while (true) {
+            try {
+                val props = client.headBlob(container, item.blobName)
+                    ?: throw PostCommitVerificationException(
+                        "Committed blob is missing: ${item.blobName}",
+                    )
+                val remoteMtime = props.metadata["mtime"]?.toLongOrNull()
+                val mtimeMatches = item.file.lastModifiedMillis <= 0L ||
+                    remoteMtime == item.file.lastModifiedMillis
+                val ownerMatches = ownershipId == null ||
+                    props.metadata["upload_id"] == ownershipId
+                if (props.contentLength == item.file.sizeBytes && mtimeMatches && ownerMatches) {
+                    return
+                }
+                throw PostCommitVerificationException(
+                    "Committed blob verification failed: ${item.blobName}",
+                )
+            } catch (e: PostCommitVerificationException) {
+                if (attempt >= maxRetries) throw e
+            } catch (e: Exception) {
+                if (attempt >= maxRetries) {
+                    throw PostCommitVerificationException(
+                        "Unable to verify committed blob: ${item.blobName}",
+                        e,
+                    )
+                }
+            }
+            attempt++
+            delay(500L * attempt)
+        }
+    }
+
+    private data class ExistingBlobProbe(
+        val matches: Boolean,
+    )
+
+    private fun deleteOwnedBlob(blobName: String): Boolean = try {
+        val owned = ownershipId != null &&
+            client.headBlob(container, blobName)?.metadata?.get("upload_id") == ownershipId
+        if (owned) client.deleteBlob(container, blobName)
+        true
+    } catch (_: Exception) {
+        false
     }
 
     /** Azure metadata values must be ASCII; strip anything that isn't printable. */
@@ -309,6 +395,8 @@ class UploadEngine(
 
     companion object {
         const val DEFAULT_BLOCK_SIZE = 4 * 1024 * 1024 // 4 MiB
+        private const val CHECKPOINT_INTERVAL_BLOCKS = 8
+        private const val PROGRESS_SAMPLE_INTERVAL_MS = 2_000L
 
         private fun formatBlockId(index: Int): String = "block-%010d".format(index)
 
@@ -345,3 +433,8 @@ class UploadEngine(
 }
 
 class CardLostException(cause: Throwable? = null) : RuntimeException(cause)
+
+private class PostCommitVerificationException(
+    message: String,
+    cause: Throwable? = null,
+) : RuntimeException(message, cause)

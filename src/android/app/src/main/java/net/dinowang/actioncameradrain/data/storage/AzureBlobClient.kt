@@ -2,6 +2,7 @@ package net.dinowang.actioncameradrain.data.storage
 
 import net.dinowang.actioncameradrain.data.config.UploadAuth
 import net.dinowang.actioncameradrain.data.config.UploadConfig
+import net.dinowang.actioncameradrain.domain.upload.BlobUploadClient
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -35,7 +36,7 @@ import java.util.regex.Pattern
 class AzureBlobClient(
     private val config: UploadConfig.AzureBlob,
     private val http: OkHttpClient,
-) {
+) : BlobUploadClient {
     private val accountUrl: HttpUrl = config.accountUrl.trimEnd('/').toHttpUrl()
 
     private val sasQuery: String? = when (val a = config.auth) {
@@ -104,7 +105,14 @@ class AzureBlobClient(
         }
     }
 
-    fun putBlock(container: String, blobName: String, blockId: String, bytes: ByteArray, offset: Int = 0, length: Int = bytes.size) {
+    override fun putBlock(
+        container: String,
+        blobName: String,
+        blockId: String,
+        bytes: ByteArray,
+        offset: Int,
+        length: Int,
+    ) {
         val urlB = accountUrl.newBuilder().addPathSegment(container)
         for (seg in blobName.split('/')) urlB.addPathSegment(seg)
         urlB.addEncodedQueryParameter("comp", "block")
@@ -117,12 +125,12 @@ class AzureBlobClient(
         http.newCall(req).execute().use { ensureSuccess(it, "PutBlock $container/$blobName ($blockId)") }
     }
 
-    fun putBlockList(
+    override fun putBlockList(
         container: String,
         blobName: String,
         blockIds: List<String>,
-        contentType: String? = null,
-        metadata: Map<String, String> = emptyMap(),
+        contentType: String?,
+        metadata: Map<String, String>,
     ) {
         val urlB = accountUrl.newBuilder().addPathSegment(container)
         for (seg in blobName.split('/')) urlB.addPathSegment(seg)
@@ -157,7 +165,7 @@ class AzureBlobClient(
      * Returns `null` if the blob does not exist (404).
      * Throws [AzureBlobException] on any other failure.
      */
-    fun headBlob(container: String, blobName: String): BlobProperties? {
+    override fun headBlob(container: String, blobName: String): BlobProperties? {
         val url = blobUrl(container, blobName)
         val req = Request.Builder().url(url).head().build()
         http.newCall(req).execute().use { resp ->
@@ -175,7 +183,7 @@ class AzureBlobClient(
         }
     }
 
-    fun deleteBlob(container: String, blobName: String) {
+    override fun deleteBlob(container: String, blobName: String) {
         val url = blobUrl(container, blobName)
         val req = Request.Builder().url(url).delete().build()
         http.newCall(req).execute().use {

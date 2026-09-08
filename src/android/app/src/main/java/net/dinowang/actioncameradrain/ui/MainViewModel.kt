@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -14,20 +15,23 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import net.dinowang.actioncameradrain.background.UploadJobScheduler
 import net.dinowang.actioncameradrain.data.config.ConfigRepository
 import net.dinowang.actioncameradrain.data.config.UploadConfig
 import net.dinowang.actioncameradrain.data.storage.AzureBlobClient
 import net.dinowang.actioncameradrain.data.storage.ContainerSelectionRepository
 import net.dinowang.actioncameradrain.data.storage.GrantedTreeStore
+import net.dinowang.actioncameradrain.data.storage.TransferStore
 import net.dinowang.actioncameradrain.domain.filing.IngestPlan
 import net.dinowang.actioncameradrain.domain.filing.IngestPlanner
 import net.dinowang.actioncameradrain.domain.filing.SafMediaSource
-import net.dinowang.actioncameradrain.domain.upload.CheckpointStore
-import net.dinowang.actioncameradrain.domain.upload.FileUploadStatus
+import net.dinowang.actioncameradrain.domain.upload.NetworkPolicy
 import net.dinowang.actioncameradrain.domain.upload.StartMode
-import net.dinowang.actioncameradrain.domain.upload.UploadEngine
+import net.dinowang.actioncameradrain.domain.upload.TransferRecord
+import net.dinowang.actioncameradrain.domain.upload.TransferState
 import net.dinowang.actioncameradrain.domain.upload.UploadProgress
 import net.dinowang.actioncameradrain.domain.usb.RemovableVolumeProvider
+import net.dinowang.actioncameradrain.domain.usb.TreeAccessChecker
 import net.dinowang.actioncameradrain.domain.usb.UsbCardDevice
 import net.dinowang.actioncameradrain.domain.usb.UsbCardWatcher
 import okhttp3.OkHttpClient
@@ -41,8 +45,7 @@ data class CardUiState(
     val planning: Boolean = false,
     val planError: String? = null,
     val progress: UploadProgress? = null,
-    val fileStatus: Map<String, FileUploadStatus> = emptyMap(),
-    val engine: UploadEngine? = null,
+    val transfer: TransferRecord? = null,
 ) {
     val id: String get() = treeUri?.toString() ?: device?.deviceId?.toString() ?: "unknown"
 }
@@ -63,10 +66,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val configRepo = ConfigRepository(application)
     private val usbWatcher = UsbCardWatcher(application)
-    private val checkpointStore = CheckpointStore(application)
     private val containerRepo = ContainerSelectionRepository(application)
     private val grantedTrees = GrantedTreeStore(application)
+    private val transferStore = TransferStore(application)
+    private val uploadScheduler = UploadJobScheduler(application)
     private val volumeProvider = RemovableVolumeProvider(application)
+    private val treeAccess = TreeAccessChecker(application)
     private val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
@@ -84,7 +89,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _container = MutableStateFlow(ContainerPickerState())
     val container: StateFlow<ContainerPickerState> = _container.asStateFlow()
 
+    val networkPolicy: StateFlow<NetworkPolicy> = transferStore.networkPolicy
+        .stateIn(viewModelScope, SharingStarted.Eagerly, NetworkPolicy.UNMETERED)
+
+    private var transferSnapshot: List<TransferRecord> = emptyList()
+    private val restoredPlanRequests = mutableSetOf<String>()
+
     init {
+        viewModelScope.launch { uploadScheduler.reconcileOrphanedTransfers() }
         viewModelScope.launch {
             configRepo.load()
             // Seed picker once we know the active config.
@@ -101,6 +113,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             usbWatcher.attached.collect { reconcileFromUsb(it) }
         }
+        viewModelScope.launch {
+            transferStore.records.collectLatest { records ->
+                transferSnapshot = records
+                val decorated = _cards.value.map(::attachLatestTransfer)
+                val knownUris = decorated.mapNotNull { it.treeUri?.toString() }.toSet()
+                val restored = records
+                    .filter {
+                        it.state !in setOf(
+                            TransferState.COMPLETED,
+                            TransferState.CANCELLED,
+                        ) && it.treeUri !in knownUris
+                    }
+                    .distinctBy { it.treeUri }
+                    .map { transfer ->
+                        CardUiState(
+                            device = null,
+                            treeUri = Uri.parse(transfer.treeUri),
+                            rootLabel = transfer.rootLabel,
+                            progress = transfer.toUploadProgress(),
+                            transfer = transfer,
+                        )
+                    }
+                _cards.value = decorated + restored
+                for (card in restored) {
+                    val uri = card.treeUri ?: continue
+                    if (restoredPlanRequests.add(uri.toString())) {
+                        planCard(card.device?.deviceId, uri)
+                    }
+                }
+            }
+        }
         viewModelScope.launch { pollCardAccessibility() }
     }
 
@@ -111,16 +154,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * notice and drop the card.
      */
     private suspend fun pollCardAccessibility() {
-        val ctx = getApplication<Application>()
         while (true) {
             kotlinx.coroutines.delay(2_000)
             val snapshot = _cards.value
             val keep = snapshot.filter { card ->
                 val tree = card.treeUri ?: return@filter true
-                isTreeAccessible(ctx, tree)
+                val transferIsActionable = card.transfer?.state !in setOf(
+                    null,
+                    TransferState.COMPLETED,
+                    TransferState.CANCELLED,
+                )
+                transferIsActionable || treeAccess.isAccessible(tree)
             }
             if (keep.size != snapshot.size) {
-                for (lost in snapshot - keep.toSet()) lost.engine?.reportCardLost()
                 _cards.value = keep
             }
         }
@@ -135,6 +181,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onContainerInputChanged(text: String) {
         _container.value = _container.value.copy(current = text.trim(), notice = null)
+        _cards.value = _cards.value.map(::attachLatestTransfer)
     }
 
     /** User explicitly selected an existing container (from dropdown). */
@@ -143,6 +190,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val trimmed = name.trim()
         if (trimmed.isBlank()) return
         _container.value = _container.value.copy(current = trimmed, notice = null)
+        _cards.value = _cards.value.map(::attachLatestTransfer)
         viewModelScope.launch {
             containerRepo.setLast(cfg.id, trimmed)
             _container.value = _container.value.copy(history = containerRepo.history(cfg.id))
@@ -217,7 +265,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Drop existing plans so they get rebuilt for the new container (blob paths are container-relative). */
     private fun invalidatePlans() {
         _cards.value = _cards.value.map { c ->
-            c.copy(plan = null, progress = null, fileStatus = emptyMap(), engine = null)
+            c.copy(plan = null, progress = c.transfer?.toUploadProgress())
         }
         // Auto-replan for any card with a tree already attached.
         for (c in _cards.value) {
@@ -233,7 +281,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val survived = current.mapNotNull { card ->
             val stillAttached = devices.any { it.deviceId == card.device?.deviceId }
             if (!stillAttached && card.device != null) {
-                card.engine?.reportCardLost()
                 null
             } else card
         }
@@ -241,7 +288,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val additions = devices
             .filter { it.deviceId !in existingDeviceIds }
             .map { CardUiState(device = it, treeUri = null, rootLabel = it.displayName) }
-        _cards.value = survived + additions
+        _cards.value = (survived + additions).map(::attachLatestTransfer)
 
         // For each new card try to auto-attach a previously-granted tree, or at
         // least pre-seed the picker to the matching StorageVolume.
@@ -255,35 +302,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val key = usbKey(dev)
         val saved = grantedTrees.get(key)
         if (saved != null && isPermissionStillPersisted(ctx, saved) &&
-            isTreeAccessibleAndNonEmpty(ctx, saved)
+            treeAccess.isAccessible(saved, requireNonEmpty = true)
         ) {
             attachTreeUri(dev.deviceId, saved)
         }
         // Don't pre-compute the picker intent here — vold may not have mounted
         // the volume yet at USB-attach time. The UI calls [buildPickerIntent]
         // at click time instead.
-    }
-
-    /**
-     * Returns true if the tree is currently reachable. We accept any mounted
-     * tree (even if empty) because a card whose files we've already uploaded
-     * may legitimately be empty. The auto-grant path additionally requires the
-     * tree to be non-empty to avoid matching a stale grant from a different
-     * card — that stricter check lives in [resolveCardSource].
-     */
-    private fun isTreeAccessible(ctx: android.content.Context, uri: Uri): Boolean {
-        val doc = runCatching { DocumentFile.fromTreeUri(ctx, uri) }.getOrNull() ?: return false
-        // exists() does a content query; if the underlying volume was unmounted
-        // (card pulled from reader, reader unplugged, etc.) the query returns
-        // no rows → exists() == false.
-        return runCatching { doc.exists() && doc.canRead() }.getOrDefault(false)
-    }
-
-    private fun isTreeAccessibleAndNonEmpty(ctx: android.content.Context, uri: Uri): Boolean {
-        val doc = runCatching { DocumentFile.fromTreeUri(ctx, uri) }.getOrNull() ?: return false
-        if (!doc.exists() || !doc.canRead()) return false
-        val children = runCatching { doc.listFiles() }.getOrNull() ?: return false
-        return children.isNotEmpty()
     }
 
     /** Fresh look-up of a SAF picker intent pre-seeded to a removable volume. */
@@ -320,7 +345,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (deviceId == null && list.none { it.treeUri == treeUri }) {
                 list + CardUiState(device = null, treeUri = treeUri, rootLabel = rootLabel)
             } else list
-        }
+        }.map(::attachLatestTransfer)
+            .groupBy { it.treeUri?.toString() ?: "device:${it.device?.deviceId}" }
+            .map { (_, matches) -> matches.firstOrNull { it.device != null } ?: matches.first() }
 
         // Remember the grant so subsequent re-attaches are silent.
         if (deviceId != null) {
@@ -337,13 +364,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             updateCard(deviceId, treeUri) { it.copy(planning = true, planError = null) }
             val ctx = getApplication<Application>()
-            val cfg = config.value
-            if (cfg !is UploadConfig.AzureBlob) {
-                updateCard(deviceId, treeUri) {
-                    it.copy(planning = false, planError = "Upload config not loaded.")
-                }
-                return@launch
-            }
+            config.first { it is UploadConfig.AzureBlob }
             val plan = withContext(Dispatchers.IO) {
                 runCatching {
                     val root = DocumentFile.fromTreeUri(ctx, treeUri)
@@ -372,44 +393,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val containerName = _container.value.current.trim().ifBlank { cfg.container }
         val card = _cards.value.firstOrNull { it.matches(deviceId, treeUri) } ?: return
         val plan = card.plan ?: return
-        val client = AzureBlobClient(cfg, http)
-        val sourceId = "${treeUri}@${containerName}"
-        val engine = UploadEngine(
-            client = client,
-            container = containerName,
-            checkpoints = checkpointStore,
-            scope = CheckpointStore.ScopeKey(cfg.id, sourceId),
-        )
-        // Persist the selection — uploading is the strongest signal of intent.
-        viewModelScope.launch { containerRepo.setLast(cfg.id, containerName) }
         viewModelScope.launch {
-            launch { engine.progress.collect { p -> updateCardSilent(deviceId, treeUri) { it.copy(progress = p, engine = engine) } } }
-            launch { engine.fileStatus.collect { s -> updateCardSilent(deviceId, treeUri) { it.copy(fileStatus = s) } } }
+            containerRepo.setLast(cfg.id, containerName)
+            uploadScheduler.schedule(
+                configId = cfg.id,
+                treeUri = treeUri.toString(),
+                container = containerName,
+                rootLabel = card.rootLabel,
+                deviceId = deviceId,
+                mode = mode,
+                networkPolicy = networkPolicy.value,
+                totalFiles = plan.fileCount,
+                totalBytes = plan.totalBytes,
+            ).onFailure { error ->
+                updateCardSilent(deviceId, treeUri) {
+                    it.copy(planError = error.message ?: "Unable to schedule upload.")
+                }
+            }
         }
-        engine.start(plan, mode)
     }
 
     fun pauseUpload(deviceId: Int?, treeUri: Uri) {
         val card = _cards.value.firstOrNull { it.matches(deviceId, treeUri) } ?: return
-        card.engine?.cancel()
+        val transferId = card.transfer?.id ?: return
+        viewModelScope.launch { uploadScheduler.pause(transferId) }
     }
 
     fun cancelUpload(deviceId: Int?, treeUri: Uri) {
-        val cfg = config.value as? UploadConfig.AzureBlob ?: return
-        val containerName = _container.value.current.trim().ifBlank { cfg.container }
         val card = _cards.value.firstOrNull { it.matches(deviceId, treeUri) } ?: return
-        card.engine?.cancel()
-        val sourceId = "${treeUri}@${containerName}"
-        val scopeKey = CheckpointStore.ScopeKey(cfg.id, sourceId)
-        viewModelScope.launch {
-            val client = AzureBlobClient(cfg, http)
-            val existing = checkpointStore.listForScope(scopeKey)
-            for (cp in existing) runCatching { client.deleteBlob(containerName, cp.blobName) }
-            checkpointStore.deleteAllForScope(scopeKey)
-            updateCardSilent(deviceId, treeUri) {
-                it.copy(progress = null, fileStatus = emptyMap(), engine = null)
-            }
-        }
+        val transfer = card.transfer ?: return
+        viewModelScope.launch { uploadScheduler.cancel(transfer.id) }
+    }
+
+    fun setNetworkPolicy(policy: NetworkPolicy) {
+        viewModelScope.launch { transferStore.setNetworkPolicy(policy) }
     }
 
     private fun updateCard(deviceId: Int?, treeUri: Uri, transform: (CardUiState) -> CardUiState) {
@@ -424,6 +441,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun CardUiState.matches(deviceId: Int?, treeUri: Uri): Boolean =
         this.treeUri == treeUri || (deviceId != null && this.device?.deviceId == deviceId)
+
+    private fun attachLatestTransfer(card: CardUiState): CardUiState {
+        val uri = card.treeUri?.toString() ?: return card.copy(transfer = null, progress = null)
+        val selectedContainer = _container.value.current.trim()
+        val transfer = transferSnapshot
+            .asSequence()
+            .filter { it.treeUri == uri }
+            .sortedWith(
+                compareByDescending<TransferRecord> { it.isActive }
+                    .thenByDescending { it.container == selectedContainer }
+                    .thenByDescending { it.updatedAtMillis },
+            )
+            .firstOrNull()
+        return card.copy(transfer = transfer, progress = transfer?.toUploadProgress())
+    }
 
     fun forgetGrant(deviceId: Int?) {
         val dev = _cards.value.firstOrNull { it.device?.deviceId == deviceId }?.device ?: return
