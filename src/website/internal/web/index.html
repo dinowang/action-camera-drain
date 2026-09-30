@@ -7,51 +7,61 @@
   <link rel="stylesheet" href="/app.css" />
 </head>
 <body>
-  <header>
-    <h1>🪣 Action Camera Catch</h1>
-    <p class="muted">把雲端素材拉回 NAS。</p>
+  <header class="app-header">
+    <div>
+      <h1>🪣 Action Camera Catch</h1>
+      <p class="muted">由伺服器將雲端素材拉回 NAS；關閉瀏覽器不會停止下載。</p>
+    </div>
+    <div class="header-actions">
+      <button id="refresh-btn">重新整理</button>
+      <button id="sync-all-btn" class="primary">同步全部</button>
+    </div>
   </header>
 
-  <section id="containers-section">
-    <div class="row between">
-      <h2>Containers</h2>
-      <div>
-        <button id="refresh-btn">重新整理</button>
-        <button id="sync-all-btn" class="primary">同步全部</button>
+  <main class="workspace">
+    <section class="panel containers-panel" aria-labelledby="containers-title">
+      <div class="panel-header">
+        <div>
+          <h2 id="containers-title">Blob Entries</h2>
+          <span id="containers-summary" class="muted">載入中…</span>
+        </div>
       </div>
-    </div>
-    <table id="containers-table">
-      <thead><tr><th></th><th>名稱</th><th>遠端</th><th>待下載</th><th>已存在</th><th>待下載大小</th><th>操作</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </section>
+      <div id="containers-list" class="container-list" aria-live="polite"></div>
+    </section>
 
-  <section id="job-section" hidden>
-    <h2>同步進度</h2>
-    <div class="row between">
-      <div>
-        <span id="job-state" class="state">running</span>
-        <span id="job-progress" class="muted"></span>
-      </div>
-      <div>
-        <span id="job-bps" class="muted"></span>
-        <button id="cancel-btn">取消</button>
-      </div>
-    </div>
-    <progress id="job-progress-bar" value="0" max="1"></progress>
-    <details>
-      <summary>事件記錄</summary>
-      <ul id="job-log"></ul>
-    </details>
-  </section>
+    <div class="right-workspace">
+      <section class="panel blobs-panel" aria-labelledby="blobs-title">
+        <div class="panel-header">
+          <div>
+            <h2 id="blobs-title">Blob Entries Details</h2>
+            <span id="blobs-summary" class="muted">請先選擇左側 container</span>
+          </div>
+        </div>
+        <div class="panel-content table-scroll">
+          <div id="blobs-empty" class="empty-state">
+            選擇一個 container 以查看遠端檔案與 NAS 狀態。
+          </div>
+          <table id="blobs-table" hidden>
+            <thead>
+              <tr><th>狀態</th><th>名稱</th><th>大小</th><th>備註</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
 
-  <section id="blobs-section" hidden>
-    <h2 id="blobs-title">Blobs</h2>
-    <table id="blobs-table">
-      <thead><tr><th>狀態</th><th>名稱</th><th>大小</th><th>備註</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </section>
+      <section class="panel jobs-panel" aria-labelledby="jobs-title">
+        <div class="panel-header">
+          <div>
+            <h2 id="jobs-title">Download Log and Status</h2>
+            <span id="jobs-summary" class="muted">伺服器背景工作</span>
+          </div>
+          <button id="refresh-jobs-btn">重新整理 Jobs</button>
+        </div>
+        <div id="jobs-list" class="jobs-list" aria-live="polite"></div>
+      </section>
+    </div>
+  </main>
 
   <script src="/app.js"></script>
 </body>

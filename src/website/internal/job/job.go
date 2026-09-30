@@ -33,6 +33,10 @@ const (
 	StateFailed    State = "failed"
 )
 
+func (s State) terminal() bool {
+	return s == StateDone || s == StateCancelled || s == StateFailed
+}
+
 // Event types emitted via SSE.
 const (
 	EventJobStart    = "job-start"
@@ -63,27 +67,65 @@ type Event struct {
 	State       State   `json:"state,omitempty"`
 }
 
+// Snapshot is the browser-reconstructable state of one server-side job.
+type Snapshot struct {
+	ID                 string   `json:"id"`
+	Containers         []string `json:"containers"`
+	State              State    `json:"state"`
+	CreatedAtMillis    int64    `json:"createdAtMillis"`
+	StartedAtMillis    int64    `json:"startedAtMillis,omitempty"`
+	FinishedAtMillis   int64    `json:"finishedAtMillis,omitempty"`
+	FilesDone          int      `json:"filesDone"`
+	FilesFailed        int      `json:"filesFailed"`
+	FilesTotal         int      `json:"filesTotal"`
+	BytesDone          int64    `json:"bytesDone"`
+	BytesTotal         int64    `json:"bytesTotal"`
+	CurrentConcurrency int      `json:"currentConcurrency"`
+	BytesPerSecond     float64  `json:"bytesPerSecond"`
+	Message            string   `json:"message,omitempty"`
+}
+
 // Job is one sync run.
 type Job struct {
-	ID         string
-	State      State
-	CreatedAt  time.Time
-	StartedAt  time.Time
-	FinishedAt time.Time
+	ID string
 
 	mu          sync.RWMutex
+	snapshot    Snapshot
 	subscribers map[chan Event]struct{}
 	history     []Event
 	cancel      context.CancelFunc
+	maxHistory  int
+	now         func() time.Time
 }
 
-func newJob(id string) *Job {
+func newJob(
+	id string,
+	containers []string,
+	createdAt time.Time,
+	maxHistory int,
+	now func() time.Time,
+) *Job {
 	return &Job{
-		ID:          id,
-		State:       StateRunning,
-		CreatedAt:   time.Now(),
+		ID: id,
+		snapshot: Snapshot{
+			ID:              id,
+			Containers:      append([]string(nil), containers...),
+			State:           StateRunning,
+			CreatedAtMillis: createdAt.UnixMilli(),
+		},
 		subscribers: map[chan Event]struct{}{},
+		maxHistory:  maxHistory,
+		now:         now,
 	}
+}
+
+// Snapshot returns an immutable copy suitable for APIs and UI reconstruction.
+func (j *Job) Snapshot() Snapshot {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	out := j.snapshot
+	out.Containers = append([]string(nil), j.snapshot.Containers...)
+	return out
 }
 
 // Subscribe returns a channel that receives events. Caller should consume
@@ -92,35 +134,75 @@ func newJob(id string) *Job {
 func (j *Job) Subscribe(buffer int) (<-chan Event, []Event, func()) {
 	ch := make(chan Event, buffer)
 	j.mu.Lock()
-	j.subscribers[ch] = struct{}{}
 	hist := append([]Event(nil), j.history...)
+	if j.snapshot.State.terminal() {
+		close(ch)
+		j.mu.Unlock()
+		return ch, hist, func() {}
+	}
+	j.subscribers[ch] = struct{}{}
 	j.mu.Unlock()
 	return ch, hist, func() {
 		j.mu.Lock()
-		if _, ok := j.subscribers[ch]; ok {
-			delete(j.subscribers, ch)
-			close(ch)
-		}
+		delete(j.subscribers, ch)
 		j.mu.Unlock()
 	}
 }
 
 func (j *Job) emit(ev Event) {
-	ev.Timestamp = time.Now().UnixMilli()
+	ev.Timestamp = j.now().UnixMilli()
 	j.mu.Lock()
+	j.applyEventLocked(ev)
 	j.history = append(j.history, ev)
-	subs := make([]chan Event, 0, len(j.subscribers))
-	for ch := range j.subscribers {
-		subs = append(subs, ch)
+	if len(j.history) > j.maxHistory {
+		j.history = append([]Event(nil), j.history[len(j.history)-j.maxHistory:]...)
 	}
-	j.mu.Unlock()
-	for _, ch := range subs {
+	for ch := range j.subscribers {
 		select {
 		case ch <- ev:
 		default:
 			// Drop event for slow consumer.
 		}
 	}
+	j.mu.Unlock()
+}
+
+func (j *Job) applyEventLocked(ev Event) {
+	switch ev.Type {
+	case EventJobStart:
+		j.snapshot.StartedAtMillis = ev.Timestamp
+	case EventFileDone:
+		j.snapshot.FilesDone = ev.FilesDone
+		j.snapshot.FilesTotal = ev.FilesTotal
+		j.snapshot.BytesDone = ev.BytesDone
+		j.snapshot.BytesTotal = ev.BytesTotal
+	case EventFileFailed:
+		j.snapshot.FilesFailed = ev.FilesFailed
+		j.snapshot.FilesTotal = ev.FilesTotal
+		j.snapshot.BytesTotal = ev.BytesTotal
+		j.snapshot.Message = ev.Reason
+	case EventConcurrency:
+		j.snapshot.CurrentConcurrency = ev.Concurrency
+		j.snapshot.BytesPerSecond = ev.Bps
+	case EventJobDone:
+		j.snapshot.State = ev.State
+		j.snapshot.FinishedAtMillis = ev.Timestamp
+		j.snapshot.BytesPerSecond = 0
+		j.snapshot.Message = ev.Reason
+	}
+}
+
+func (j *Job) setTotals(files int, bytes int64) {
+	j.mu.Lock()
+	j.snapshot.FilesTotal = files
+	j.snapshot.BytesTotal = bytes
+	j.mu.Unlock()
+}
+
+func (j *Job) setCancel(cancel context.CancelFunc) {
+	j.mu.Lock()
+	j.cancel = cancel
+	j.mu.Unlock()
 }
 
 // Manager keeps track of all active and recent jobs.
@@ -136,7 +218,17 @@ type Manager struct {
 	activeAll        int
 	activeContainers map[string]int
 	deleting         map[string]bool
+	now              func() time.Time
+	retention        time.Duration
+	maxRecent        int
+	maxHistory       int
 }
+
+const (
+	defaultRetention  = 24 * time.Hour
+	defaultMaxRecent  = 50
+	defaultMaxHistory = 500
+)
 
 func NewManager(store azblob.Storage, fs *localfs.FS, minCon, maxCon int) *Manager {
 	return &Manager{
@@ -147,52 +239,98 @@ func NewManager(store azblob.Storage, fs *localfs.FS, minCon, maxCon int) *Manag
 		jobs:             map[string]*Job{},
 		activeContainers: map[string]int{},
 		deleting:         map[string]bool{},
+		now:              time.Now,
+		retention:        defaultRetention,
+		maxRecent:        defaultMaxRecent,
+		maxHistory:       defaultMaxHistory,
 	}
 }
 
 // ErrOperationConflict means a download and deletion target overlap.
 var ErrOperationConflict = errors.New("container operation conflicts with an active job")
+var ErrJobNotFound = errors.New("job not found")
+var ErrJobNotRunning = errors.New("job is not running")
 
 // Get returns a job by ID, or nil.
 func (m *Manager) Get(id string) *Job {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.pruneLocked()
 	return m.jobs[id]
 }
 
-// Cancel signals the running job to stop.
-func (m *Manager) Cancel(id string) bool {
+// GetSnapshot returns one browser-safe job summary.
+func (m *Manager) GetSnapshot(id string) (Snapshot, bool) {
 	j := m.Get(id)
 	if j == nil {
-		return false
+		return Snapshot{}, false
+	}
+	return j.Snapshot(), true
+}
+
+// List returns active jobs first, then recent terminal jobs.
+func (m *Manager) List() []Snapshot {
+	m.mu.Lock()
+	m.pruneLocked()
+	jobs := make([]*Job, 0, len(m.jobs))
+	for _, j := range m.jobs {
+		jobs = append(jobs, j)
+	}
+	m.mu.Unlock()
+
+	out := make([]Snapshot, 0, len(jobs))
+	for _, j := range jobs {
+		out = append(out, j.Snapshot())
+	}
+	sort.Slice(out, func(i, k int) bool {
+		if out[i].State.terminal() != out[k].State.terminal() {
+			return !out[i].State.terminal()
+		}
+		return out[i].CreatedAtMillis > out[k].CreatedAtMillis
+	})
+	return out
+}
+
+// Cancel signals a running job to stop.
+func (m *Manager) Cancel(id string) error {
+	j := m.Get(id)
+	if j == nil {
+		return ErrJobNotFound
 	}
 	j.mu.Lock()
+	if j.snapshot.State.terminal() {
+		j.mu.Unlock()
+		return ErrJobNotRunning
+	}
 	cancel := j.cancel
 	j.mu.Unlock()
 	if cancel != nil {
 		cancel()
-		return true
+		return nil
 	}
-	return false
+	return ErrJobNotRunning
 }
 
 // Start kicks off a new job covering the specified containers (or "*" = all).
 // Returns the job; events stream via Subscribe.
 func (m *Manager) Start(ctx context.Context, containers []string) (*Job, error) {
 	targets := normalizeTargets(containers)
+	runCtx, cancel := context.WithCancel(context.Background())
 	m.mu.Lock()
+	m.pruneLocked()
 	if err := m.reserveJobLocked(targets); err != nil {
 		m.mu.Unlock()
+		cancel()
 		return nil, err
 	}
 	m.seq++
-	id := fmt.Sprintf("job-%d-%d", time.Now().Unix(), m.seq)
-	j := newJob(id)
+	now := m.now()
+	id := fmt.Sprintf("job-%d-%d", now.Unix(), m.seq)
+	j := newJob(id, targets, now, m.maxHistory, m.now)
+	j.setCancel(cancel)
 	m.jobs[id] = j
 	m.mu.Unlock()
 
-	runCtx, cancel := context.WithCancel(context.Background())
-	j.cancel = cancel
 	go func() {
 		defer m.releaseJob(targets)
 		m.run(runCtx, j, targets)
@@ -226,14 +364,17 @@ func (m *Manager) ReserveDeletion(containerName string) (func(), error) {
 
 func (m *Manager) reserveJobLocked(targets []string) error {
 	if len(targets) == 1 && targets[0] == "*" {
-		if len(m.deleting) > 0 {
+		if len(m.deleting) > 0 || m.activeAll > 0 || len(m.activeContainers) > 0 {
 			return ErrOperationConflict
 		}
 		m.activeAll++
 		return nil
 	}
+	if m.activeAll > 0 {
+		return ErrOperationConflict
+	}
 	for _, target := range targets {
-		if m.deleting[target] {
+		if m.deleting[target] || m.activeContainers[target] > 0 {
 			return ErrOperationConflict
 		}
 	}
@@ -255,6 +396,36 @@ func (m *Manager) releaseJob(targets []string) {
 		if m.activeContainers[target] <= 0 {
 			delete(m.activeContainers, target)
 		}
+	}
+}
+
+func (m *Manager) pruneLocked() {
+	nowMillis := m.now().UnixMilli()
+	cutoffMillis := nowMillis - m.retention.Milliseconds()
+	type terminalJob struct {
+		id       string
+		finished int64
+	}
+	terminal := make([]terminalJob, 0)
+	for id, j := range m.jobs {
+		snapshot := j.Snapshot()
+		if !snapshot.State.terminal() {
+			continue
+		}
+		if snapshot.FinishedAtMillis > 0 && snapshot.FinishedAtMillis < cutoffMillis {
+			delete(m.jobs, id)
+			continue
+		}
+		terminal = append(terminal, terminalJob{id: id, finished: snapshot.FinishedAtMillis})
+	}
+	if len(terminal) <= m.maxRecent {
+		return
+	}
+	sort.Slice(terminal, func(i, k int) bool {
+		return terminal[i].finished > terminal[k].finished
+	})
+	for _, item := range terminal[m.maxRecent:] {
+		delete(m.jobs, item.id)
 	}
 }
 
@@ -285,7 +456,6 @@ func normalizeTargets(containers []string) []string {
 }
 
 func (m *Manager) run(ctx context.Context, j *Job, requestedContainers []string) {
-	j.StartedAt = time.Now()
 	j.emit(Event{Type: EventJobStart, State: StateRunning})
 
 	// Resolve container list.
@@ -333,6 +503,7 @@ func (m *Manager) run(ctx context.Context, j *Job, requestedContainers []string)
 	}
 
 	filesTotal := len(pending)
+	j.setTotals(filesTotal, bytesTotal)
 	if filesTotal == 0 {
 		m.finish(j, StateDone, "nothing to do")
 		return
@@ -411,12 +582,17 @@ func (m *Manager) run(ctx context.Context, j *Job, requestedContainers []string)
 		}
 		it := pending[idx].item
 		if r.Err != nil {
-			atomic.AddInt64(&filesFailed, 1)
+			failed := atomic.AddInt64(&filesFailed, 1)
 			j.emit(Event{
-				Type:      EventFileFailed,
-				Container: it.Container,
-				BlobName:  it.BlobName,
-				Reason:    r.Err.Error(),
+				Type:        EventFileFailed,
+				Container:   it.Container,
+				BlobName:    it.BlobName,
+				BytesDone:   atomic.LoadInt64(&bytesDone),
+				BytesTotal:  bytesTotal,
+				FilesDone:   int(atomic.LoadInt64(&filesDone)),
+				FilesTotal:  filesTotal,
+				FilesFailed: int(failed),
+				Reason:      r.Err.Error(),
 			})
 			continue
 		}
@@ -447,13 +623,9 @@ func (m *Manager) run(ctx context.Context, j *Job, requestedContainers []string)
 }
 
 func (m *Manager) finish(j *Job, st State, reason string) {
-	j.mu.Lock()
-	j.State = st
-	j.FinishedAt = time.Now()
-	j.mu.Unlock()
 	j.emit(Event{Type: EventJobDone, State: st, Reason: reason})
-	// Close all subscribers so SSE handlers exit cleanly.
 	j.mu.Lock()
+	j.cancel = nil
 	for ch := range j.subscribers {
 		close(ch)
 		delete(j.subscribers, ch)

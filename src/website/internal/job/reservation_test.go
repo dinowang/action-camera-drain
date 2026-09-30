@@ -55,9 +55,7 @@ func waitForJob(t *testing.T, j *Job) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		j.mu.RLock()
-		state := j.State
-		j.mu.RUnlock()
+		state := j.Snapshot().State
 		if state != StateRunning {
 			return
 		}

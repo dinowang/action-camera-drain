@@ -203,7 +203,12 @@ type startJobResp struct {
 }
 
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, s.jobs.List())
+		return
+	case http.MethodPost:
+	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -235,11 +240,23 @@ func (s *Server) handleJobByID(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet:
 		s.handleJobEvents(w, r, id)
-	case len(parts) == 1 && r.Method == http.MethodDelete:
-		if s.jobs.Cancel(id) {
-			w.WriteHeader(http.StatusNoContent)
-		} else {
+	case len(parts) == 1 && r.Method == http.MethodGet:
+		snapshot, ok := s.jobs.GetSnapshot(id)
+		if !ok {
 			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusOK, snapshot)
+	case len(parts) == 1 && r.Method == http.MethodDelete:
+		switch err := s.jobs.Cancel(id); {
+		case err == nil:
+			w.WriteHeader(http.StatusNoContent)
+		case errors.Is(err, job.ErrJobNotFound):
+			http.NotFound(w, r)
+		case errors.Is(err, job.ErrJobNotRunning):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		default:
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		}
 	default:
 		http.NotFound(w, r)
@@ -268,6 +285,10 @@ func (s *Server) handleJobEvents(w http.ResponseWriter, r *http.Request, id stri
 	// Replay history.
 	for _, ev := range history {
 		writeSSE(w, ev)
+		if ev.Type == job.EventJobDone {
+			flusher.Flush()
+			return
+		}
 	}
 	flusher.Flush()
 
@@ -281,6 +302,9 @@ func (s *Server) handleJobEvents(w http.ResponseWriter, r *http.Request, id stri
 			}
 			writeSSE(w, ev)
 			flusher.Flush()
+			if ev.Type == job.EventJobDone {
+				return
+			}
 		}
 	}
 }

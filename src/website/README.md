@@ -4,8 +4,12 @@
 
 ```
 Azure Blob Storage  →  Catch (web service)  →  NAS volume
-   (按 deviceKey 分類)        瀏覽 / 觸發 / 進度        /data/<container>/<blob name>
+   (按 deviceKey 分類)        後端下載 / 瀏覽器控制       /data/<container>/<blob name>
 ```
+
+下載資料流直接由 Catch 後端送至 NAS，不經過瀏覽器。瀏覽器只建立 job、讀取進度與送出
+取消命令，因此關閉或重新整理頁面不會停止下載；重新開啟頁面後會自動找回同一個 Catch
+程序內仍在執行的 jobs。
 
 ## 對應關係（Drain ↔ Catch）
 
@@ -107,9 +111,11 @@ services:
 | `GET` | `/api/containers` | 列容器 + 每個容器的 remote / pending / skipped 計數 |
 | `GET` | `/api/containers/{c}/blobs` | 列 blob：name / size / mtime / status |
 | `DELETE` | `/api/containers/{c}` | 重新驗證 NAS 副本後，刪除整個 Azure container |
+| `GET` | `/api/jobs` | 列出 active jobs 與 24 小時內最多 50 筆 recent jobs |
 | `POST` | `/api/jobs` | body: `{ "containers": ["foo"] }` 或 `{ "containers": ["*"] }`；回 `{ "id": "..." }` |
+| `GET` | `/api/jobs/{id}` | 取得可重建 UI 的 job snapshot |
 | `GET` | `/api/jobs/{id}/events` | SSE：`job-start` / `file-start` / `file-skip` / `file-done` / `file-failed` / `concurrency` / `job-done` |
-| `DELETE` | `/api/jobs/{id}` | 取消 |
+| `DELETE` | `/api/jobs/{id}` | 取消執行中的 job；terminal job 回 `409 Conflict` |
 
 外部 cron 觸發範例：
 
@@ -118,6 +124,31 @@ curl -X POST -H 'Content-Type: application/json' \
   -d '{"containers":["*"]}' \
   http://nas.lan:8080/api/jobs
 ```
+
+## 背景下載與瀏覽器重連
+
+- Job 由 Catch 後端 goroutine 擁有，不依賴建立 job 的 HTTP request 或 SSE 連線存活。
+- 頁面載入會呼叫 `GET /api/jobs`，重新建立所有 active job cards，並重新連接各自的
+  SSE；近期完成、失敗與取消紀錄則由 snapshot 直接顯示。
+- 可同時監看與分別取消多個不同 container 的 jobs。
+- 同一 container、與 multi-container request 重疊的 container，或任何 wildcard job
+  之間會互斥；重複啟動回 `409 Conflict`，避免多個 workers 同時寫同一個 `.part`。
+- Terminal jobs 在程序記憶體內最多保留 50 筆且不超過 24 小時；active jobs 不會因
+  retention 被移除。
+
+Catch process 或 container 重啟時，記憶體內 jobs 仍會停止且不會自動恢復。本專案依
+既有規格移除未完成 `.part`，下次同步重新下載整個檔案；本輪不引入資料庫或跨程序
+resume。
+
+## Web 工作台
+
+桌面版分為三個可獨立捲動區域：
+
+- 左側：containers 與 remote／pending／downloaded 摘要。
+- 右上：所選 container 的 blob details。
+- 右下：active 與 recent download jobs、進度及事件記錄。
+
+窄螢幕依序堆疊 Containers、Blob Details、Download Jobs，不要求水平捲動。
 
 ## 刪除雲端 container
 
@@ -146,6 +177,7 @@ container 內容在驗證與刪除之間完全凍結的 transaction。Catch 已�
 
 - **刪除需明確操作**：下載完成不會自動刪除；必須按下「刪除雲端」並確認。
 - **不做 resume**：依規格，下載失敗就抹除 `.part` 整檔重抓。
+- **不做 process restart recovery**：Catch process/container 重啟後不恢復記憶體內 jobs。
 - **無內建排程**：靠 NAS 的 cron / Task Scheduler 從外部呼叫 API。
 - **無 Auth**：預設信任 NAS 內網；如需公開請套 reverse proxy + Basic Auth。
 - **SAS 限制**：必須 account-level + List Containers 權限。

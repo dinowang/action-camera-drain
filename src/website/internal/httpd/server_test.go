@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -79,6 +80,107 @@ func TestDeleteContainerHandlerReturnsConflictForMissingLocalFile(t *testing.T) 
 	if store.deleted != "" {
 		t.Fatal("container must not be deleted")
 	}
+}
+
+func TestJobDiscoveryAndTerminalCancellation(t *testing.T) {
+	lfs := localfs.New(t.TempDir())
+	store := &httpStorage{}
+	manager := job.NewManager(store, lfs, 1, 1)
+	cleaner := cleanup.New(store, lfs, manager)
+	frontend := fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("ok")},
+	}
+	handler := New(store, lfs, manager, cleaner, frontend).Handler()
+	started, err := manager.Start(context.Background(), []string{"camera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminalSnapshot(t, manager, started.ID)
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/api/jobs", nil)
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, listRequest)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("list status = %d", listResponse.Code)
+	}
+	var list []job.Snapshot
+	if err := json.NewDecoder(listResponse.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].ID != started.ID || list[0].State != job.StateDone {
+		t.Fatalf("unexpected job list: %+v", list)
+	}
+
+	detailRequest := httptest.NewRequest(http.MethodGet, "/api/jobs/"+started.ID, nil)
+	detailResponse := httptest.NewRecorder()
+	handler.ServeHTTP(detailResponse, detailRequest)
+	if detailResponse.Code != http.StatusOK {
+		t.Fatalf("detail status = %d", detailResponse.Code)
+	}
+
+	cancelRequest := httptest.NewRequest(http.MethodDelete, "/api/jobs/"+started.ID, nil)
+	cancelResponse := httptest.NewRecorder()
+	handler.ServeHTTP(cancelResponse, cancelRequest)
+	if cancelResponse.Code != http.StatusConflict {
+		t.Fatalf("terminal cancel status = %d", cancelResponse.Code)
+	}
+
+	eventsRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/api/jobs/"+started.ID+"/events",
+		nil,
+	)
+	eventsResponse := httptest.NewRecorder()
+	handler.ServeHTTP(eventsResponse, eventsRequest)
+	if eventsResponse.Code != http.StatusOK ||
+		!strings.Contains(eventsResponse.Body.String(), "event: job-done") {
+		t.Fatalf(
+			"terminal SSE replay status=%d body=%q",
+			eventsResponse.Code,
+			eventsResponse.Body.String(),
+		)
+	}
+}
+
+func TestStartJobReturnsConflictForReservedContainer(t *testing.T) {
+	lfs := localfs.New(t.TempDir())
+	store := &httpStorage{}
+	manager := job.NewManager(store, lfs, 1, 1)
+	release, err := manager.ReserveDeletion("camera")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	cleaner := cleanup.New(store, lfs, manager)
+	frontend := fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("ok")},
+	}
+	handler := New(store, lfs, manager, cleaner, frontend).Handler()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/jobs",
+		strings.NewReader(`{"containers":["camera"]}`),
+	)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func waitForTerminalSnapshot(t *testing.T, manager *job.Manager, id string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		snapshot, ok := manager.GetSnapshot(id)
+		if ok && snapshot.State != job.StateRunning {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("job did not reach a terminal state")
 }
 
 func testServer(store azblob.Storage, lfs *localfs.FS) http.Handler {

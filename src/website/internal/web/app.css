@@ -1,109 +1,269 @@
 :root {
   --fg: #1f2933;
   --fg-muted: #6b7785;
-  --bg: #f7f9fc;
+  --bg: #f4f7fb;
   --bg-card: #ffffff;
-  --border: #e0e6ed;
+  --border: #d9e1ea;
   --accent: #0078d4;
   --accent-bg: #e8f4fd;
   --skip: #6b7785;
   --pending: #0078d4;
   --done: #28a745;
   --failed: #d13438;
+  --shadow: 0 2px 8px rgb(31 41 51 / 8%);
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html, body { min-height: 100%; }
 
 body {
   margin: 0;
-  font-family: -apple-system, "Segoe UI", "Helvetica Neue", "PingFang TC", sans-serif;
+  padding: 20px;
   color: var(--fg);
   background: var(--bg);
-  padding: 24px;
-  max-width: 1100px;
-  margin-left: auto;
-  margin-right: auto;
+  font-family: -apple-system, "Segoe UI", "Helvetica Neue", "PingFang TC", sans-serif;
 }
 
-header h1 { margin: 0 0 4px; }
-header p { margin: 0 0 24px; }
+.app-header {
+  min-height: 68px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 16px;
+}
 
-h2 { margin: 24px 0 12px; }
+h1, h2, p { margin: 0; }
+h1 { font-size: clamp(1.35rem, 2vw, 1.75rem); }
+h2 { font-size: 1rem; }
+.app-header p { margin-top: 4px; }
+.muted { color: var(--fg-muted); font-size: 0.86rem; }
 
-.muted { color: var(--fg-muted); font-size: 0.9em; }
-
-.row { display: flex; align-items: center; gap: 12px; }
-.row.between { justify-content: space-between; }
+.header-actions,
+.container-actions,
+.job-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 
 button {
-  background: var(--bg-card);
+  min-height: 34px;
+  padding: 6px 12px;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 14px;
-  font-size: 14px;
+  border-radius: 7px;
+  color: var(--fg);
+  background: var(--bg-card);
+  font: inherit;
+  font-size: 0.86rem;
   cursor: pointer;
 }
-button.primary { background: var(--accent); color: white; border-color: var(--accent); }
-button.danger { background: var(--failed); color: white; border-color: var(--failed); }
+
+button.primary { color: #fff; border-color: var(--accent); background: var(--accent); }
+button.danger { color: #fff; border-color: var(--failed); background: var(--failed); }
 button:disabled { cursor: not-allowed; opacity: 0.45; }
-button:hover { opacity: 0.85; }
+button:not(:disabled):hover { filter: brightness(0.96); }
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(260px, 30%) minmax(0, 70%);
+  gap: 12px;
+  height: calc(100vh - 124px);
+  min-height: 620px;
+}
+
+.right-workspace {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 65fr) minmax(240px, 35fr);
+  gap: 12px;
+}
+
+.panel {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow);
+}
+
+.panel-header {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-header .muted { display: block; margin-top: 3px; }
+.panel-content,
+.container-list,
+.jobs-list { min-height: 0; overflow: auto; }
+.container-list, .jobs-list { padding: 10px; }
+
+.container-card {
+  margin-bottom: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+}
+
+.container-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgb(0 120 212 / 12%);
+}
+
+.container-select {
+  width: 100%;
+  padding: 12px;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+  background: transparent;
+}
+
+.container-card.selected .container-select { background: var(--accent-bg); }
+.container-name { display: block; font-weight: 650; overflow-wrap: anywhere; }
+.container-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 10px;
+  margin-top: 8px;
+  color: var(--fg-muted);
+  font-size: 0.78rem;
+}
+
+.container-actions {
+  justify-content: flex-end;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.table-scroll { overflow: auto; }
 
 table {
   width: 100%;
   border-collapse: collapse;
   background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
 }
-th, td {
-  padding: 10px 12px;
-  text-align: left;
-  border-bottom: 1px solid var(--border);
-  font-size: 14px;
-}
-th { background: var(--bg); font-weight: 600; }
-tr:last-child td { border-bottom: none; }
-tr:hover td { background: var(--accent-bg); cursor: pointer; }
 
-td.num { text-align: right; font-variant-numeric: tabular-nums; }
+th, td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  font-size: 0.84rem;
+  vertical-align: top;
+}
+
+th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fafc;
+  font-weight: 650;
+}
+
+td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.blob-name { max-width: 440px; overflow-wrap: anywhere; }
 
 .state {
   display: inline-block;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
   background: var(--bg);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
-.state.running { background: var(--accent-bg); color: var(--accent); }
-.state.done    { background: #e6f4ea; color: var(--done); }
-.state.failed  { background: #fde7e8; color: var(--failed); }
-.state.cancelled { background: #fff4d6; color: #8a5a00; }
+
+.state.running { color: var(--accent); background: var(--accent-bg); }
+.state.done { color: var(--done); background: #e6f4ea; }
+.state.failed { color: var(--failed); background: #fde7e8; }
+.state.cancelled { color: #8a5a00; background: #fff4d6; }
 .state.skipped { color: var(--skip); }
 .state.pending { color: var(--pending); }
 
+.job-card {
+  margin-bottom: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.job-card-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.job-time { display: block; margin-top: 3px; }
+.job-metrics { margin: 8px 0; overflow-wrap: anywhere; }
+
 progress {
   width: 100%;
-  height: 8px;
+  height: 7px;
   appearance: none;
-  border: none;
+  border: 0;
+  border-radius: 999px;
   background: var(--border);
-  border-radius: 4px;
 }
-progress::-webkit-progress-bar { background: var(--border); border-radius: 4px; }
-progress::-webkit-progress-value { background: var(--accent); border-radius: 4px; }
 
-#job-log {
-  list-style: none;
-  padding: 0;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 12px;
-  max-height: 240px;
-  overflow-y: auto;
-  background: var(--bg);
+progress::-webkit-progress-bar { border-radius: 999px; background: var(--border); }
+progress::-webkit-progress-value { border-radius: 999px; background: var(--accent); }
+
+details { margin-top: 8px; }
+summary { color: var(--fg-muted); font-size: 0.8rem; cursor: pointer; }
+
+.job-log {
+  max-height: 120px;
+  margin: 8px 0 0;
   padding: 8px;
-  border-radius: 4px;
+  overflow-y: auto;
+  border-radius: 6px;
+  background: #f2f5f8;
+  list-style: none;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
 }
-#job-log li { margin-bottom: 2px; }
+
+.job-log li { margin-bottom: 3px; overflow-wrap: anywhere; }
+
+.empty-state,
+.error-state {
+  display: grid;
+  min-height: 120px;
+  place-items: center;
+  padding: 24px;
+  color: var(--fg-muted);
+  text-align: center;
+}
+
+.error-state { color: var(--failed); }
+
+@media (max-width: 800px) {
+  body { padding: 12px; }
+  .app-header { align-items: flex-start; flex-direction: column; }
+  .header-actions { width: 100%; }
+  .header-actions button { flex: 1; }
+  .workspace {
+    height: auto;
+    min-height: 0;
+    grid-template-columns: 1fr;
+  }
+  .right-workspace { display: contents; }
+  .containers-panel { min-height: 340px; max-height: 55vh; }
+  .blobs-panel { min-height: 420px; max-height: 65vh; }
+  .jobs-panel { min-height: 380px; max-height: 65vh; }
+  .job-card-header { align-items: flex-start; flex-direction: column; }
+  .job-actions { width: 100%; justify-content: space-between; }
+}
