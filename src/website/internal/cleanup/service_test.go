@@ -72,6 +72,94 @@ func TestDeleteContainerRejectsIncompleteLocalCopy(t *testing.T) {
 	}
 }
 
+func TestDeleteContainerAcceptsVerifiedNoMtimeReceipt(t *testing.T) {
+	root := t.TempDir()
+	fs := localfs.New(root)
+	content := []byte("video")
+	localPath := mustLocalPath(t, fs, "camera", "clip.mp4")
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(localPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blob := azblob.BlobInfo{
+		Name:     "clip.mp4",
+		Size:     int64(len(content)),
+		ETag:     "etag-1",
+		Metadata: map[string]string{},
+	}
+	if _, _, err := fs.VerifyOrReplace(
+		localPath,
+		localfs.RemoteIdentity{Size: blob.Size, ETag: blob.ETag},
+		func(w io.Writer) error {
+			_, err := w.Write(content)
+			return err
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	store := &cleanupStorage{listResponses: [][]azblob.BlobInfo{{blob}, {blob}, {}}}
+	service := New(store, fs, job.NewManager(store, fs, 1, 1))
+
+	if _, err := service.DeleteContainer(context.Background(), "camera"); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.deletedBlobs) != 1 {
+		t.Fatalf("expected verified blob deletion, got %v", store.deletedBlobs)
+	}
+}
+
+func TestDeleteContainerRejectsTamperedNoMtimeLocalFile(t *testing.T) {
+	root := t.TempDir()
+	fs := localfs.New(root)
+	content := []byte("video")
+	localPath := mustLocalPath(t, fs, "camera", "clip.mp4")
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(localPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blob := azblob.BlobInfo{
+		Name:     "clip.mp4",
+		Size:     int64(len(content)),
+		ETag:     "etag-1",
+		Metadata: map[string]string{},
+	}
+	if _, _, err := fs.VerifyOrReplace(
+		localPath,
+		localfs.RemoteIdentity{Size: blob.Size, ETag: blob.ETag},
+		func(w io.Writer) error {
+			_, err := w.Write(content)
+			return err
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(localPath, []byte("alter"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(localPath, st.ModTime(), st.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	store := &cleanupStorage{listResponses: [][]azblob.BlobInfo{{blob}}}
+	service := New(store, fs, job.NewManager(store, fs, 1, 1))
+
+	_, err = service.DeleteContainer(context.Background(), "camera")
+	var verificationErr *VerificationError
+	if !errors.As(err, &verificationErr) {
+		t.Fatalf("expected VerificationError, got %v", err)
+	}
+	if store.deleted != "" || len(store.deletedBlobs) != 0 {
+		t.Fatal("tampered local content must prevent cloud deletion")
+	}
+}
+
 func TestDeleteContainerRejectsChangedRemoteSnapshot(t *testing.T) {
 	root := t.TempDir()
 	fs := localfs.New(root)
@@ -215,7 +303,7 @@ func (s *cleanupStorage) ListBlobs(context.Context, string) ([]azblob.BlobInfo, 
 	return s.listResponses[index], nil
 }
 
-func (s *cleanupStorage) Download(context.Context, string, string, io.Writer) error {
+func (s *cleanupStorage) DownloadIfMatch(context.Context, string, string, string, io.Writer) error {
 	return errors.New("unexpected download")
 }
 

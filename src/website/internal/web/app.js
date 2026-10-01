@@ -61,7 +61,7 @@ async function loadContainers() {
           <span class="container-name">📁 ${escapeHTML(container.name)}</span>
           <span class="container-metrics">
             <span>${container.remoteCount} 遠端</span>
-            <span>${container.pendingCount} 待下載</span>
+            <span>${container.pendingCount} 待同步（${container.verifyCount ?? 0} 驗證）</span>
             <span>${container.skippedCount} 已存在</span>
             <span>${fmtBytes(container.pendingBytes)}</span>
           </span>
@@ -271,6 +271,10 @@ function connectJob(view) {
   });
   listen("file-start", (data) => appendJobLog(view, `▶ ${data.blob}`));
   listen("file-skip", (data) => appendJobLog(view, `⏭ ${data.blob}`));
+  listen("file-verified", (data) => appendJobLog(
+    view,
+    `≡ ${data.blob}: ${data.reason ?? "content verified"}`
+  ));
   listen("file-warning", (data) => appendJobLog(view, `⚠ ${data.blob}: ${data.reason ?? ""}`));
   listen("file-done", (data) => {
     Object.assign(view.snapshot, data);
@@ -291,6 +295,7 @@ function connectJob(view) {
     source.close();
     view.source = null;
     loadContainers();
+    if (selectedContainer) loadBlobs(selectedContainer);
     loadJobs();
   });
   source.onerror = () => loadJobs();

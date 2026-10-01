@@ -83,8 +83,12 @@ func (s *Service) DeleteContainer(ctx context.Context, containerName string) (Re
 		}
 		decision := s.fs.VerifyForDeletion(
 			localPath,
-			blob.Size,
-			blob.Metadata["mtime"],
+			localfs.RemoteIdentity{
+				Size:       blob.Size,
+				MtimeMeta:  blob.Metadata["mtime"],
+				ETag:       blob.ETag,
+				ContentMD5: blob.ContentMD5,
+			},
 		)
 		if !decision.Skip {
 			failures = append(failures, Failure{

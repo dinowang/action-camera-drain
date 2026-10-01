@@ -12,11 +12,13 @@ import (
 // ItemStatus is one of:
 //
 //	pending — needs download
-//	skipped — size+mtime match remote
+//	verify  — same-size local file needs content verification
+//	skipped — local identity matches remote
 type ItemStatus string
 
 const (
 	StatusPending ItemStatus = "pending"
+	StatusVerify  ItemStatus = "verify"
 	StatusSkipped ItemStatus = "skipped"
 )
 
@@ -26,7 +28,10 @@ type Item struct {
 	BlobName    string
 	LocalPath   string
 	Size        int64
+	MtimeMeta   string
 	MtimeMillis int64 // 0 = unknown
+	ETag        string
+	ContentMD5  []byte
 	Status      ItemStatus
 	SkipReason  string // populated when Status==StatusSkipped or when not skipping; explains decision
 }
@@ -36,6 +41,7 @@ type Summary struct {
 	Container    string
 	RemoteCount  int
 	PendingCount int
+	VerifyCount  int
 	SkippedCount int
 	PendingBytes int64
 }
@@ -54,13 +60,22 @@ func Build(
 			return Summary{}, nil, fmt.Errorf("unsafe blob path %q: %w", b.Name, err)
 		}
 		mtimeStr := b.Metadata["mtime"]
-		dec := fs.ShouldSkip(local, b.Size, mtimeStr)
+		remote := localfs.RemoteIdentity{
+			Size:       b.Size,
+			MtimeMeta:  mtimeStr,
+			ETag:       b.ETag,
+			ContentMD5: b.ContentMD5,
+		}
+		dec := fs.ShouldSkip(local, remote)
 		item := Item{
 			Container:   containerName,
 			BlobName:    b.Name,
 			LocalPath:   local,
 			Size:        b.Size,
+			MtimeMeta:   mtimeStr,
 			MtimeMillis: parseMillis(mtimeStr),
+			ETag:        b.ETag,
+			ContentMD5:  append([]byte(nil), b.ContentMD5...),
 			SkipReason:  dec.Reason,
 		}
 		if dec.Skip {
@@ -68,6 +83,10 @@ func Build(
 			sum.SkippedCount++
 		} else {
 			item.Status = StatusPending
+			if dec.VerificationNeeded {
+				item.Status = StatusVerify
+				sum.VerifyCount++
+			}
 			sum.PendingCount++
 			sum.PendingBytes += b.Size
 		}

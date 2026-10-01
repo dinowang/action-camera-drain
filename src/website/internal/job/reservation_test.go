@@ -74,7 +74,7 @@ func (*reservationStorage) ListBlobs(context.Context, string) ([]azblob.BlobInfo
 	return nil, nil
 }
 
-func (*reservationStorage) Download(context.Context, string, string, io.Writer) error {
+func (*reservationStorage) DownloadIfMatch(context.Context, string, string, string, io.Writer) error {
 	return nil
 }
 

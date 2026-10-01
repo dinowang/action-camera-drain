@@ -82,6 +82,62 @@ func TestDeleteContainerHandlerReturnsConflictForMissingLocalFile(t *testing.T) 
 	}
 }
 
+func TestContainerAPIReturnsVerificationState(t *testing.T) {
+	root := t.TempDir()
+	lfs := localfs.New(root)
+	path, err := lfs.LocalPath("camera", "clip.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blob := azblob.BlobInfo{
+		Name:     "clip.mp4",
+		Size:     5,
+		ETag:     "etag-1",
+		Metadata: map[string]string{},
+	}
+	store := &httpStorage{lists: [][]azblob.BlobInfo{{blob}, {blob}}}
+	handler := testServer(store, lfs)
+
+	containerResponse := httptest.NewRecorder()
+	handler.ServeHTTP(
+		containerResponse,
+		httptest.NewRequest(http.MethodGet, "/api/containers", nil),
+	)
+	if containerResponse.Code != http.StatusOK {
+		t.Fatalf("container status = %d, body = %s", containerResponse.Code, containerResponse.Body)
+	}
+	var summaries []containerSummary
+	if err := json.NewDecoder(containerResponse.Body).Decode(&summaries); err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 || summaries[0].VerifyCount != 1 ||
+		summaries[0].PendingCount != 1 {
+		t.Fatalf("unexpected summaries: %+v", summaries)
+	}
+
+	blobResponse := httptest.NewRecorder()
+	handler.ServeHTTP(
+		blobResponse,
+		httptest.NewRequest(http.MethodGet, "/api/containers/camera/blobs", nil),
+	)
+	if blobResponse.Code != http.StatusOK {
+		t.Fatalf("blob status = %d, body = %s", blobResponse.Code, blobResponse.Body)
+	}
+	var blobs []blobView
+	if err := json.NewDecoder(blobResponse.Body).Decode(&blobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(blobs) != 1 || blobs[0].Status != "verify" {
+		t.Fatalf("unexpected blobs: %+v", blobs)
+	}
+}
+
 func TestJobDiscoveryAndTerminalCancellation(t *testing.T) {
 	lfs := localfs.New(t.TempDir())
 	store := &httpStorage{}
@@ -303,7 +359,7 @@ func (s *blockingHTTPStorage) ListBlobs(ctx context.Context, _ string) ([]azblob
 	}
 }
 
-func (*blockingHTTPStorage) Download(context.Context, string, string, io.Writer) error {
+func (*blockingHTTPStorage) DownloadIfMatch(context.Context, string, string, string, io.Writer) error {
 	return nil
 }
 
@@ -344,7 +400,7 @@ func (s *httpStorage) ListBlobs(context.Context, string) ([]azblob.BlobInfo, err
 	return s.lists[index], nil
 }
 
-func (*httpStorage) Download(context.Context, string, string, io.Writer) error {
+func (*httpStorage) DownloadIfMatch(context.Context, string, string, string, io.Writer) error {
 	return nil
 }
 

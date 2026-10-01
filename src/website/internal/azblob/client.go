@@ -36,7 +36,7 @@ type BlobInfo struct {
 type Storage interface {
 	ListContainers(ctx context.Context) ([]string, error)
 	ListBlobs(ctx context.Context, containerName string) ([]BlobInfo, error)
-	Download(ctx context.Context, containerName, blobName string, w io.Writer) error
+	DownloadIfMatch(ctx context.Context, containerName, blobName, etag string, w io.Writer) error
 	DeleteBlobIfMatch(ctx context.Context, containerName, blobName, etag string) error
 	DeleteContainer(ctx context.Context, containerName string) error
 }
@@ -127,11 +127,28 @@ func (c *Client) ListBlobs(ctx context.Context, containerName string) ([]BlobInf
 	return out, nil
 }
 
-// Download streams the blob into w. The caller is responsible for fsync + rename.
-func (c *Client) Download(ctx context.Context, containerName, blobName string, w io.Writer) error {
+// DownloadIfMatch streams the listed blob version into w. The caller is
+// responsible for fsync + rename.
+func (c *Client) DownloadIfMatch(
+	ctx context.Context,
+	containerName string,
+	blobName string,
+	etag string,
+	w io.Writer,
+) error {
+	if etag == "" {
+		return fmt.Errorf("download %s/%s: missing ETag", containerName, blobName)
+	}
 	cc := c.svc.NewContainerClient(containerName)
 	bc := cc.NewBlobClient(blobName)
-	resp, err := bc.DownloadStream(ctx, nil)
+	etagValue := azcore.ETag(etag)
+	resp, err := bc.DownloadStream(ctx, &blob.DownloadStreamOptions{
+		AccessConditions: &blob.AccessConditions{
+			ModifiedAccessConditions: &blob.ModifiedAccessConditions{
+				IfMatch: &etagValue,
+			},
+		},
+	})
 	if err != nil {
 		return fmt.Errorf("download %s/%s: %w", containerName, blobName, err)
 	}

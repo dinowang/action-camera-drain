@@ -2,8 +2,12 @@ package job
 
 import (
 	"context"
+	"crypto/md5"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -264,7 +268,6 @@ func TestManagerClearsTerminalRecordsOnly(t *testing.T) {
 		done.ID:   done,
 		failed.ID: failed,
 	}
-
 	if err := manager.RemoveRecord(active.ID); !errors.Is(err, ErrJobNotTerminal) {
 		t.Fatalf("active remove error = %v", err)
 	}
@@ -282,6 +285,52 @@ func TestManagerClearsTerminalRecordsOnly(t *testing.T) {
 	}
 }
 
+func TestManagerVerifiesNoMtimeContentWithoutDownload(t *testing.T) {
+	root := t.TempDir()
+	fs := localfs.New(root)
+	content := []byte("video")
+	path := filepath.Join(root, "camera", "clip.mp4")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum := md5.Sum(content)
+	store := &verificationStorage{
+		blob: azblob.BlobInfo{
+			Name:       "clip.mp4",
+			Size:       int64(len(content)),
+			ETag:       "etag-1",
+			ContentMD5: sum[:],
+			Metadata:   map[string]string{},
+		},
+	}
+	manager := NewManager(store, fs, 1, 1)
+
+	j, err := manager.Start(context.Background(), []string{"camera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForJob(t, j)
+
+	snapshot := j.Snapshot()
+	if snapshot.State != StateDone || snapshot.FilesDone != 1 ||
+		snapshot.BytesDone != int64(len(content)) {
+		t.Fatalf("unexpected snapshot: %+v", snapshot)
+	}
+	if store.downloads.Load() != 0 {
+		t.Fatal("matching Content-MD5 should not download the blob")
+	}
+	if decision := fs.ShouldSkip(path, localfs.RemoteIdentity{
+		Size:       int64(len(content)),
+		ETag:       "etag-1",
+		ContentMD5: sum[:],
+	}); !decision.Skip {
+		t.Fatalf("job did not persist a valid receipt: %+v", decision)
+	}
+}
+
 type snapshotStorage struct{}
 
 func (*snapshotStorage) ListContainers(context.Context) ([]string, error) {
@@ -292,7 +341,7 @@ func (*snapshotStorage) ListBlobs(context.Context, string) ([]azblob.BlobInfo, e
 	return nil, nil
 }
 
-func (*snapshotStorage) Download(context.Context, string, string, io.Writer) error {
+func (*snapshotStorage) DownloadIfMatch(context.Context, string, string, string, io.Writer) error {
 	return nil
 }
 
@@ -301,6 +350,38 @@ func (*snapshotStorage) DeleteBlobIfMatch(context.Context, string, string, strin
 }
 
 func (*snapshotStorage) DeleteContainer(context.Context, string) error {
+	return nil
+}
+
+type verificationStorage struct {
+	blob      azblob.BlobInfo
+	downloads atomic.Int32
+}
+
+func (*verificationStorage) ListContainers(context.Context) ([]string, error) {
+	return []string{"camera"}, nil
+}
+
+func (s *verificationStorage) ListBlobs(context.Context, string) ([]azblob.BlobInfo, error) {
+	return []azblob.BlobInfo{s.blob}, nil
+}
+
+func (s *verificationStorage) DownloadIfMatch(
+	context.Context,
+	string,
+	string,
+	string,
+	io.Writer,
+) error {
+	s.downloads.Add(1)
+	return errors.New("unexpected download")
+}
+
+func (*verificationStorage) DeleteBlobIfMatch(context.Context, string, string, string) error {
+	return nil
+}
+
+func (*verificationStorage) DeleteContainer(context.Context, string) error {
 	return nil
 }
 
@@ -333,7 +414,7 @@ func (s *blockingStorage) ListBlobs(
 	}
 }
 
-func (*blockingStorage) Download(context.Context, string, string, io.Writer) error {
+func (*blockingStorage) DownloadIfMatch(context.Context, string, string, string, io.Writer) error {
 	return nil
 }
 

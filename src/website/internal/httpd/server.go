@@ -64,6 +64,7 @@ type containerSummary struct {
 	Name         string `json:"name"`
 	RemoteCount  int    `json:"remoteCount"`
 	PendingCount int    `json:"pendingCount"`
+	VerifyCount  int    `json:"verifyCount"`
 	SkippedCount int    `json:"skippedCount"`
 	PendingBytes int64  `json:"pendingBytes"`
 }
@@ -94,6 +95,7 @@ func (s *Server) handleContainers(w http.ResponseWriter, r *http.Request) {
 			Name:         sum.Container,
 			RemoteCount:  sum.RemoteCount,
 			PendingCount: sum.PendingCount,
+			VerifyCount:  sum.VerifyCount,
 			SkippedCount: sum.SkippedCount,
 			PendingBytes: sum.PendingBytes,
 		})

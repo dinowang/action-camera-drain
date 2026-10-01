@@ -40,14 +40,15 @@ func (s State) terminal() bool {
 
 // Event types emitted via SSE.
 const (
-	EventJobStart    = "job-start"
-	EventFileStart   = "file-start"
-	EventFileSkip    = "file-skip"
-	EventFileDone    = "file-done"
-	EventFileWarning = "file-warning"
-	EventFileFailed  = "file-failed"
-	EventConcurrency = "concurrency"
-	EventJobDone     = "job-done"
+	EventJobStart     = "job-start"
+	EventFileStart    = "file-start"
+	EventFileSkip     = "file-skip"
+	EventFileVerified = "file-verified"
+	EventFileDone     = "file-done"
+	EventFileWarning  = "file-warning"
+	EventFileFailed   = "file-failed"
+	EventConcurrency  = "concurrency"
+	EventJobDone      = "job-done"
 )
 
 // Event is a typed payload sent to subscribers.
@@ -666,8 +667,40 @@ func (m *Manager) run(ctx context.Context, j *Job, requestedContainers []string)
 					BlobName:  it.BlobName,
 					Size:      it.Size,
 				})
+				remote := localfs.RemoteIdentity{
+					Size:       it.Size,
+					MtimeMeta:  it.MtimeMeta,
+					ETag:       it.ETag,
+					ContentMD5: it.ContentMD5,
+				}
+				if it.MtimeMeta == "" {
+					outcome, transferred, err := m.fs.VerifyOrReplace(
+						it.LocalPath,
+						remote,
+						func(w io.Writer) error {
+							return m.store.DownloadIfMatch(
+								c,
+								it.Container,
+								it.BlobName,
+								it.ETag,
+								w,
+							)
+						},
+					)
+					if err != nil {
+						return transferred, err
+					}
+					j.emit(Event{
+						Type:      EventFileVerified,
+						Container: it.Container,
+						BlobName:  it.BlobName,
+						Size:      it.Size,
+						Reason:    string(outcome),
+					})
+					return transferred, nil
+				}
 				err := m.fs.WriteAtomic(it.LocalPath, it.MtimeMillis, func(w io.Writer) error {
-					return m.store.Download(c, it.Container, it.BlobName, w)
+					return m.store.DownloadIfMatch(c, it.Container, it.BlobName, it.ETag, w)
 				})
 				if errors.Is(err, localfs.ErrChtimesUnsupported) {
 					// File is on disk; mtime persisted to sidecar so future
@@ -733,7 +766,7 @@ func (m *Manager) run(ctx context.Context, j *Job, requestedContainers []string)
 			continue
 		}
 		atomic.AddInt64(&filesDone, 1)
-		atomic.AddInt64(&bytesDone, r.Bytes)
+		atomic.AddInt64(&bytesDone, it.Size)
 		j.emit(Event{
 			Type:       EventFileDone,
 			Container:  it.Container,

@@ -230,6 +230,7 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: now
 .state.cancelled { color: #8a5a00; background: #fff4d6; }
 .state.skipped { color: var(--skip); }
 .state.pending { color: var(--pending); }
+.state.verify { color: #6b4f00; background: #fff4ce; }
 
 .job-card {
   margin-bottom: 6px;

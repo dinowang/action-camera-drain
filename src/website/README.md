@@ -15,8 +15,8 @@ Azure Blob Storage  →  Catch (web service)  →  NAS volume
 
 | 概念 | Drain（上傳） | Catch（下載） |
 | --- | --- | --- |
-| 寫入 metadata | `mtime` / `mtime_iso` / `size` / `source_name` | 讀 `mtime` → `os.Chtimes` |
-| 跳過判定 | HEAD blob，size + mtime 一致 → skip | stat local，size + mtime 一致 → skip |
+| 寫入 metadata | `mtime` / `mtime_iso` / `size` / `source_name` | 讀 `mtime` → `os.Chtimes`；缺少時改做內容驗證 |
+| 跳過判定 | HEAD blob，size + mtime 一致 → skip | size + mtime，或有效的內容驗證 receipt → skip |
 | 原子寫入 | PutBlock × N → PutBlockList | 寫 `.part` → fsync → rename → chtimes |
 | 失敗處理 | 刪 checkpoint + 刪 remote | 刪 `.part`，下次整檔重抓（不做 resume） |
 | 併發 | AdaptiveConcurrency（吞吐回授） | 同樣的吞吐回授演算法 |
@@ -90,6 +90,22 @@ services:
 
 若 chtimes 仍然失敗（例如 SMB 掛 share 又沒給 UNIX extension），Catch 會把預期 mtime 寫到 sidecar dotfile `.<filename>.actr-mtime` 並發 `file-warning` 事件，下次 sync 還是會正確跳過已下載的檔案。
 
+### 缺少 mtime metadata 的檔案
+
+自行下載、舊版工具上傳或其他來源建立的 Azure blobs 可能沒有 `mtime` metadata。Catch
+不會從檔名推造時間，也不會只靠檔名與大小判定內容相同；按「同步」時會自動處理：
+
+- Azure 有 Content-MD5：計算本地 MD5；相同時保留原檔，不重新下載。
+- Azure 沒有 Content-MD5：以 listing 時取得的 ETag 作 `If-Match` 條件，下載至
+  `.verify.part`，再以 SHA-256 與本地檔案比較；相同就丟棄暫存檔，不同才原子取代。
+- 驗證成功後寫入 `.<filename>.actr-verified.json`，綁定 remote ETag、size、digest
+  與 local stat；後續同步可快速 skip。
+
+第一次處理「沒有 mtime、也沒有 Content-MD5」的 blob 仍需讀取完整遠端內容一次。
+Receipt 成功建立後，只要遠端 ETag／size 與本地 size／mtime 未改變，就不會重複下載。
+下載本身也使用 `If-Match`，因此 blob 在 listing 與下載之間被覆寫時會失敗，不會替錯誤
+版本建立 receipt。
+
 ## 環境變數
 
 | Name | 預設 | 說明 |
@@ -108,13 +124,13 @@ services:
 | --- | --- | --- |
 | `GET` | `/` | 嵌入式 SPA |
 | `GET` | `/healthz` | 健康檢查 |
-| `GET` | `/api/containers` | 列容器 + 每個容器的 remote / pending / skipped 計數 |
+| `GET` | `/api/containers` | 列容器 + 每個容器的 remote / pending / verify / skipped 計數 |
 | `GET` | `/api/containers/{c}/blobs` | 列 blob：name / size / mtime / status |
 | `DELETE` | `/api/containers/{c}` | 重新驗證 NAS 副本後，刪除整個 Azure container |
 | `GET` | `/api/jobs` | 列出 active jobs 與 24 小時內最多 50 筆 recent jobs |
 | `POST` | `/api/jobs` | body: `{ "containers": ["foo"] }` 或 `{ "containers": ["*"] }`；回 `{ "id": "..." }` |
 | `GET` | `/api/jobs/{id}` | 取得可重建 UI 的 job snapshot |
-| `GET` | `/api/jobs/{id}/events` | SSE：`job-start` / `file-start` / `file-skip` / `file-done` / `file-failed` / `concurrency` / `job-done` |
+| `GET` | `/api/jobs/{id}/events` | SSE：`job-start` / `file-start` / `file-skip` / `file-verified` / `file-done` / `file-failed` / `concurrency` / `job-done` |
 | `DELETE` | `/api/jobs/{id}` | 取消 queued 或 running job；terminal job 回 `409 Conflict` |
 | `DELETE` | `/api/jobs/{id}/record` | 清除單一 terminal job 的記憶體紀錄 |
 | `DELETE` | `/api/jobs?state=terminal` | 清除所有 terminal job 的記憶體紀錄 |
@@ -150,7 +166,7 @@ resume。
 
 桌面版限制在單一 viewport，內容只在各 panel 內捲動：
 
-- 左側：緊湊的 containers 與 remote／pending／downloaded 摘要；滑鼠 hover 或鍵盤
+- 左側：緊湊的 containers 與 remote／pending／verify／downloaded 摘要；滑鼠 hover 或鍵盤
   focus 時顯示同步／刪除操作，觸控裝置則固定顯示。
 - 未選擇 container 時：右側由 Download Jobs 使用完整高度。
 - 選擇 container 後：右側 Blob Details 與 Download Jobs 各占一半。
@@ -159,13 +175,14 @@ resume。
 
 ## 刪除雲端 container
 
-Container 列表只有在所有遠端檔案目前都能於 NAS 以 size + metadata `mtime` 驗證時，
-才會啟用「刪除雲端」。按下後仍會由伺服器重新執行完整驗證，不能以網頁上次載入的
-狀態或前一個下載 job 的結果取代。
+Container 列表只有在所有遠端檔案目前都能於 NAS 以 size + metadata `mtime`，或有效
+內容驗證 receipt 判定完整時，才會啟用「刪除雲端」。按下後仍會由伺服器重新執行完整
+驗證，不能以網頁上次載入的狀態或前一個下載 job 的結果取代。
 
 刪除驗證刻意比一般同步 skip 更嚴格：檔案系統實際 mtime 必須吻合；只有
 `.actr-mtime` sidecar 而檔案 mtime 不符時，仍會拒絕刪除，避免 NAS 檔案被外部程式
-改寫後誤刪唯一的雲端副本。
+改寫後誤刪唯一的雲端副本。缺少 mtime 的檔案則要求 receipt 與 fresh remote ETag／
+size 相符，並重新計算本地 digest；receipt 只提供驗證基準，不直接授權刪除。
 
 安全流程：
 
@@ -175,10 +192,11 @@ Container 列表只有在所有遠端檔案目前都能於 NAS 以 size + metada
 4. 以每個 blob 的 ETag 作為 `If-Match` 條件逐一刪除；任一 blob 被覆寫就立即停止。
 5. 再次確認 container 已空，才刪除 container 本身。
 
-本地 container 目錄、影片與 `.actr-mtime` sidecar 不會被刪除。若 Drain 或其他程式
-仍可同時寫入相同 container，執行刪除時仍應避免啟動新的上傳；Azure 不提供能將
-container 內容在驗證與刪除之間完全凍結的 transaction。Catch 已用條件式 blob
-刪除與刪除前空 container 檢查縮小競爭窗口；操作期間仍不應讓其他 writer 上傳。
+本地 container 目錄、影片、`.actr-mtime` 與 `.actr-verified.json` sidecars 不會被
+刪除。若 Drain 或其他程式仍可同時寫入相同 container，執行刪除時仍應避免啟動新的
+上傳；Azure 不提供能將 container 內容在驗證與刪除之間完全凍結的 transaction。Catch
+已用條件式 blob 刪除與刪除前空 container 檢查縮小競爭窗口；操作期間仍不應讓其他
+writer 上傳。
 
 ## 限制 / 已知事項
 
@@ -205,8 +223,8 @@ src/website/
 ├── cmd/catch/main.go              # 進入點
 ├── internal/
 │   ├── config/                    # env 載入 + 驗證
-│   ├── azblob/                    # Azure SDK 包裝（List / HEAD / Download）
-│   ├── localfs/                   # path mapping、原子寫、skip 判定
+│   ├── azblob/                    # Azure SDK 包裝（List / conditional Download / Delete）
+│   ├── localfs/                   # path mapping、原子寫、receipt 與 skip 判定
 │   ├── plan/                      # remote vs local 差集
 │   ├── worker/                    # 自適應併發 pool
 │   ├── job/                       # job 生命週期 + SSE 廣播
