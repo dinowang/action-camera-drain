@@ -1,6 +1,7 @@
 # Change Notes Index
 
 ## Active / Canonical
+- Action Camera Catch — 現代化 Surface 視覺 → 20261001-03-CATCH-MODERN-SURFACES.md
 - Action Camera Catch — 缺少 mtime 的內容驗證憑證 → 20261001-02-CATCH-CONTENT-VERIFICATION.md
 - Action Camera Catch — 緊湊單視窗工作台與循序同步 queue → 20261001-01-CATCH-COMPACT-WORKSPACE.md
 - Action Camera Catch — 可重連的後端下載工作台 → 20260930-01-CATCH-RECONNECTABLE-JOBS.md
