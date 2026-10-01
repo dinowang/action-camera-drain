@@ -137,6 +137,11 @@ func TestManagerRejectsOverlappingDownloads(t *testing.T) {
 	if _, err := manager.Start(context.Background(), []string{"other"}); err != nil {
 		t.Fatalf("independent container should be allowed: %v", err)
 	}
+	select {
+	case <-store.started:
+		t.Fatal("second job started before the first job finished")
+	default:
+	}
 
 	close(store.release)
 	waitForJob(t, first)
@@ -157,6 +162,124 @@ func TestManagerReservesEveryContainerInRequest(t *testing.T) {
 
 	close(store.release)
 	waitForJob(t, first)
+}
+
+func TestManagerRunsJobsInFIFOOrder(t *testing.T) {
+	store := newBlockingStorage()
+	manager := NewManager(store, localfs.New(t.TempDir()), 1, 1)
+	first, err := manager.Start(context.Background(), []string{"camera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-store.started
+	second, err := manager.Start(context.Background(), []string{"secondary"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstSnapshot := first.Snapshot()
+	secondSnapshot := second.Snapshot()
+	if firstSnapshot.State != StateRunning || secondSnapshot.State != StateQueued {
+		t.Fatalf("unexpected states: first=%s second=%s", firstSnapshot.State, secondSnapshot.State)
+	}
+	list := manager.List()
+	if len(list) != 2 || list[0].ID != first.ID || list[1].ID != second.ID ||
+		list[1].QueuePosition != 1 {
+		t.Fatalf("unexpected queue order: %+v", list)
+	}
+
+	close(store.release)
+	waitForJob(t, first)
+	waitForJob(t, second)
+}
+
+func TestManagerCancelsQueuedJobWithoutStartingIt(t *testing.T) {
+	store := newBlockingStorage()
+	manager := NewManager(store, localfs.New(t.TempDir()), 1, 1)
+	first, err := manager.Start(context.Background(), []string{"camera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-store.started
+	second, err := manager.Start(context.Background(), []string{"secondary"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.Cancel(second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := second.Snapshot(); snapshot.State != StateCancelled {
+		t.Fatalf("queued job state = %s", snapshot.State)
+	}
+	select {
+	case <-store.started:
+		t.Fatal("cancelled queued job reached storage")
+	default:
+	}
+
+	close(store.release)
+	waitForJob(t, first)
+}
+
+func TestManagerStartsNextJobAfterRunningCancellation(t *testing.T) {
+	store := newBlockingStorage()
+	manager := NewManager(store, localfs.New(t.TempDir()), 1, 1)
+	first, err := manager.Start(context.Background(), []string{"camera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-store.started
+	second, err := manager.Start(context.Background(), []string{"secondary"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.Cancel(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-store.started:
+	case <-time.After(time.Second):
+		t.Fatal("second job did not start after cancellation")
+	}
+	if snapshot := first.Snapshot(); snapshot.State != StateCancelled {
+		t.Fatalf("first job state = %s", snapshot.State)
+	}
+
+	close(store.release)
+	waitForJob(t, second)
+}
+
+func TestManagerClearsTerminalRecordsOnly(t *testing.T) {
+	manager := NewManager(&snapshotStorage{}, localfs.New(t.TempDir()), 1, 1)
+	active := newJob("active", []string{"active"}, time.Now(), 10, manager.now)
+	active.emit(Event{Type: EventJobStart, State: StateRunning})
+	done := newJob("done", []string{"done"}, time.Now(), 10, manager.now)
+	done.emit(Event{Type: EventJobDone, State: StateDone})
+	failed := newJob("failed", []string{"failed"}, time.Now(), 10, manager.now)
+	failed.emit(Event{Type: EventJobDone, State: StateFailed})
+	manager.jobs = map[string]*Job{
+		active.ID: active,
+		done.ID:   done,
+		failed.ID: failed,
+	}
+
+	if err := manager.RemoveRecord(active.ID); !errors.Is(err, ErrJobNotTerminal) {
+		t.Fatalf("active remove error = %v", err)
+	}
+	if err := manager.RemoveRecord(done.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := manager.GetSnapshot(done.ID); ok {
+		t.Fatal("removed record still exists")
+	}
+	if cleared := manager.ClearTerminalRecords(); cleared != 1 {
+		t.Fatalf("cleared = %d", cleared)
+	}
+	if snapshot, ok := manager.GetSnapshot(active.ID); !ok || snapshot.State != StateRunning {
+		t.Fatalf("active job was removed: %+v %v", snapshot, ok)
+	}
 }
 
 type snapshotStorage struct{}

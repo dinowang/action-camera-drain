@@ -56,7 +56,7 @@ func waitForJob(t *testing.T, j *Job) {
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		state := j.Snapshot().State
-		if state != StateRunning {
+		if state.terminal() {
 			return
 		}
 		time.Sleep(time.Millisecond)

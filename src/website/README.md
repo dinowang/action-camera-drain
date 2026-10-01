@@ -115,7 +115,9 @@ services:
 | `POST` | `/api/jobs` | body: `{ "containers": ["foo"] }` 或 `{ "containers": ["*"] }`；回 `{ "id": "..." }` |
 | `GET` | `/api/jobs/{id}` | 取得可重建 UI 的 job snapshot |
 | `GET` | `/api/jobs/{id}/events` | SSE：`job-start` / `file-start` / `file-skip` / `file-done` / `file-failed` / `concurrency` / `job-done` |
-| `DELETE` | `/api/jobs/{id}` | 取消執行中的 job；terminal job 回 `409 Conflict` |
+| `DELETE` | `/api/jobs/{id}` | 取消 queued 或 running job；terminal job 回 `409 Conflict` |
+| `DELETE` | `/api/jobs/{id}/record` | 清除單一 terminal job 的記憶體紀錄 |
+| `DELETE` | `/api/jobs?state=terminal` | 清除所有 terminal job 的記憶體紀錄 |
 
 外部 cron 觸發範例：
 
@@ -128,13 +130,17 @@ curl -X POST -H 'Content-Type: application/json' \
 ## 背景下載與瀏覽器重連
 
 - Job 由 Catch 後端 goroutine 擁有，不依賴建立 job 的 HTTP request 或 SSE 連線存活。
-- 頁面載入會呼叫 `GET /api/jobs`，重新建立所有 active job cards，並重新連接各自的
-  SSE；近期完成、失敗與取消紀錄則由 snapshot 直接顯示。
-- 可同時監看與分別取消多個不同 container 的 jobs。
+- 頁面載入會呼叫 `GET /api/jobs` 重建所有 active job cards；只有 running job 建立
+  SSE，queued jobs 以單一低頻清單輪詢等待狀態切換，避免每筆排隊工作占用長連線。
+  近期完成、失敗與取消紀錄則由 snapshot 直接顯示。
+- 所有 jobs 依建立順序進入全域 FIFO queue，一次只執行一個 job；單一 job 內仍使用
+  adaptive concurrency 同時下載多個檔案。
+- 可同時監看 running、queued 與 recent jobs，queued／running jobs 均可分別取消。
 - 同一 container、與 multi-container request 重疊的 container，或任何 wildcard job
-  之間會互斥；重複啟動回 `409 Conflict`，避免多個 workers 同時寫同一個 `.part`。
+  之間會互斥；queued jobs 也會保留其 container 範圍，重複啟動回 `409 Conflict`。
 - Terminal jobs 在程序記憶體內最多保留 50 筆且不超過 24 小時；active jobs 不會因
-  retention 被移除。
+  retention 被移除。UI 可逐筆或一次清除 terminal records；這只清除工作紀錄，不會
+  刪除 NAS 檔案或 Azure Blob。
 
 Catch process 或 container 重啟時，記憶體內 jobs 仍會停止且不會自動恢復。本專案依
 既有規格移除未完成 `.part`，下次同步重新下載整個檔案；本輪不引入資料庫或跨程序
@@ -142,11 +148,12 @@ resume。
 
 ## Web 工作台
 
-桌面版分為三個可獨立捲動區域：
+桌面版限制在單一 viewport，內容只在各 panel 內捲動：
 
-- 左側：containers 與 remote／pending／downloaded 摘要。
-- 右上：所選 container 的 blob details。
-- 右下：active 與 recent download jobs、進度及事件記錄。
+- 左側：緊湊的 containers 與 remote／pending／downloaded 摘要；滑鼠 hover 或鍵盤
+  focus 時顯示同步／刪除操作，觸控裝置則固定顯示。
+- 未選擇 container 時：右側由 Download Jobs 使用完整高度。
+- 選擇 container 後：右側 Blob Details 與 Download Jobs 各占一半。
 
 窄螢幕依序堆疊 Containers、Blob Details、Download Jobs，不要求水平捲動。
 

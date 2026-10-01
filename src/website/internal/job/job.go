@@ -4,7 +4,7 @@
 //   - dispatch downloads through worker.Pool
 //   - broadcast progress events to any SSE subscribers
 //
-// A Job is one-shot: created → running → done|cancelled|failed.
+// A Job is one-shot: queued → running → done|cancelled|failed.
 package job
 
 import (
@@ -27,6 +27,7 @@ import (
 type State string
 
 const (
+	StateQueued    State = "queued"
 	StateRunning   State = "running"
 	StateDone      State = "done"
 	StateCancelled State = "cancelled"
@@ -83,6 +84,7 @@ type Snapshot struct {
 	CurrentConcurrency int      `json:"currentConcurrency"`
 	BytesPerSecond     float64  `json:"bytesPerSecond"`
 	Message            string   `json:"message,omitempty"`
+	QueuePosition      int      `json:"queuePosition,omitempty"`
 }
 
 // Job is one sync run.
@@ -110,7 +112,7 @@ func newJob(
 		snapshot: Snapshot{
 			ID:              id,
 			Containers:      append([]string(nil), containers...),
-			State:           StateRunning,
+			State:           StateQueued,
 			CreatedAtMillis: createdAt.UnixMilli(),
 		},
 		subscribers: map[chan Event]struct{}{},
@@ -170,6 +172,7 @@ func (j *Job) emit(ev Event) {
 func (j *Job) applyEventLocked(ev Event) {
 	switch ev.Type {
 	case EventJobStart:
+		j.snapshot.State = StateRunning
 		j.snapshot.StartedAtMillis = ev.Timestamp
 	case EventFileDone:
 		j.snapshot.FilesDone = ev.FilesDone
@@ -214,6 +217,8 @@ type Manager struct {
 
 	mu               sync.Mutex
 	jobs             map[string]*Job
+	queue            []*scheduledJob
+	runningJobID     string
 	seq              uint64
 	activeAll        int
 	activeContainers map[string]int
@@ -222,6 +227,12 @@ type Manager struct {
 	retention        time.Duration
 	maxRecent        int
 	maxHistory       int
+}
+
+type scheduledJob struct {
+	job     *Job
+	ctx     context.Context
+	targets []string
 }
 
 const (
@@ -250,6 +261,7 @@ func NewManager(store azblob.Storage, fs *localfs.FS, minCon, maxCon int) *Manag
 var ErrOperationConflict = errors.New("container operation conflicts with an active job")
 var ErrJobNotFound = errors.New("job not found")
 var ErrJobNotRunning = errors.New("job is not running")
+var ErrJobNotTerminal = errors.New("job is not finished")
 
 // Get returns a job by ID, or nil.
 func (m *Manager) Get(id string) *Job {
@@ -261,49 +273,100 @@ func (m *Manager) Get(id string) *Job {
 
 // GetSnapshot returns one browser-safe job summary.
 func (m *Manager) GetSnapshot(id string) (Snapshot, bool) {
-	j := m.Get(id)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pruneLocked()
+	j := m.jobs[id]
 	if j == nil {
 		return Snapshot{}, false
 	}
-	return j.Snapshot(), true
+	snapshot := j.Snapshot()
+	snapshot.QueuePosition = m.queuePositionLocked(id)
+	return snapshot, true
 }
 
 // List returns active jobs first, then recent terminal jobs.
 func (m *Manager) List() []Snapshot {
 	m.mu.Lock()
 	m.pruneLocked()
-	jobs := make([]*Job, 0, len(m.jobs))
+	out := make([]Snapshot, 0, len(m.jobs))
 	for _, j := range m.jobs {
-		jobs = append(jobs, j)
+		snapshot := j.Snapshot()
+		snapshot.QueuePosition = m.queuePositionLocked(j.ID)
+		out = append(out, snapshot)
 	}
 	m.mu.Unlock()
 
-	out := make([]Snapshot, 0, len(jobs))
-	for _, j := range jobs {
-		out = append(out, j.Snapshot())
-	}
 	sort.Slice(out, func(i, k int) bool {
-		if out[i].State.terminal() != out[k].State.terminal() {
-			return !out[i].State.terminal()
+		leftRank := stateRank(out[i].State)
+		rightRank := stateRank(out[k].State)
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		if out[i].State == StateQueued {
+			return out[i].QueuePosition < out[k].QueuePosition
 		}
 		return out[i].CreatedAtMillis > out[k].CreatedAtMillis
 	})
 	return out
 }
 
-// Cancel signals a running job to stop.
+func stateRank(state State) int {
+	switch state {
+	case StateRunning:
+		return 0
+	case StateQueued:
+		return 1
+	default:
+		return 2
+	}
+}
+
+func (m *Manager) queuePositionLocked(id string) int {
+	for index, item := range m.queue {
+		if item.job.ID == id {
+			return index + 1
+		}
+	}
+	return 0
+}
+
+// Cancel removes a queued job or signals a running job to stop.
 func (m *Manager) Cancel(id string) error {
-	j := m.Get(id)
+	m.mu.Lock()
+	m.pruneLocked()
+	j := m.jobs[id]
 	if j == nil {
+		m.mu.Unlock()
 		return ErrJobNotFound
 	}
-	j.mu.Lock()
-	if j.snapshot.State.terminal() {
-		j.mu.Unlock()
+	snapshot := j.Snapshot()
+	if snapshot.State.terminal() {
+		m.mu.Unlock()
 		return ErrJobNotRunning
 	}
+	if id != m.runningJobID {
+		for index, item := range m.queue {
+			if item.job.ID != id {
+				continue
+			}
+			m.queue = append(m.queue[:index], m.queue[index+1:]...)
+			m.releaseJobLocked(item.targets)
+			m.mu.Unlock()
+			item.job.mu.Lock()
+			cancel := item.job.cancel
+			item.job.mu.Unlock()
+			if cancel != nil {
+				cancel()
+			}
+			m.finish(item.job, StateCancelled, "cancelled while queued")
+			return nil
+		}
+	}
+	j.mu.Lock()
 	cancel := j.cancel
 	j.mu.Unlock()
+	m.mu.Unlock()
 	if cancel != nil {
 		cancel()
 		return nil
@@ -311,9 +374,9 @@ func (m *Manager) Cancel(id string) error {
 	return ErrJobNotRunning
 }
 
-// Start kicks off a new job covering the specified containers (or "*" = all).
-// Returns the job; events stream via Subscribe.
-func (m *Manager) Start(ctx context.Context, containers []string) (*Job, error) {
+// Start queues a new job covering the specified containers (or "*" = all).
+// The manager runs one queued job at a time.
+func (m *Manager) Start(_ context.Context, containers []string) (*Job, error) {
 	targets := normalizeTargets(containers)
 	runCtx, cancel := context.WithCancel(context.Background())
 	m.mu.Lock()
@@ -329,13 +392,44 @@ func (m *Manager) Start(ctx context.Context, containers []string) (*Job, error) 
 	j := newJob(id, targets, now, m.maxHistory, m.now)
 	j.setCancel(cancel)
 	m.jobs[id] = j
+	m.queue = append(m.queue, &scheduledJob{
+		job:     j,
+		ctx:     runCtx,
+		targets: targets,
+	})
+	next := m.nextJobLocked()
 	m.mu.Unlock()
 
-	go func() {
-		defer m.releaseJob(targets)
-		m.run(runCtx, j, targets)
-	}()
+	m.startScheduled(next)
 	return j, nil
+}
+
+func (m *Manager) nextJobLocked() *scheduledJob {
+	if m.runningJobID != "" || len(m.queue) == 0 {
+		return nil
+	}
+	next := m.queue[0]
+	m.queue[0] = nil
+	m.queue = m.queue[1:]
+	m.runningJobID = next.job.ID
+	return next
+}
+
+func (m *Manager) startScheduled(item *scheduledJob) {
+	if item == nil {
+		return
+	}
+	go func() {
+		m.run(item.ctx, item.job, item.targets)
+
+		m.mu.Lock()
+		m.releaseJobLocked(item.targets)
+		m.runningJobID = ""
+		next := m.nextJobLocked()
+		m.mu.Unlock()
+
+		m.startScheduled(next)
+	}()
 }
 
 // ReserveDeletion blocks overlapping Catch downloads and other deletions until
@@ -384,9 +478,7 @@ func (m *Manager) reserveJobLocked(targets []string) error {
 	return nil
 }
 
-func (m *Manager) releaseJob(targets []string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (m *Manager) releaseJobLocked(targets []string) {
 	if len(targets) == 1 && targets[0] == "*" {
 		m.activeAll--
 		return
@@ -397,6 +489,38 @@ func (m *Manager) releaseJob(targets []string) {
 			delete(m.activeContainers, target)
 		}
 	}
+}
+
+// RemoveRecord removes one terminal job from the in-memory registry.
+func (m *Manager) RemoveRecord(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pruneLocked()
+	j := m.jobs[id]
+	if j == nil {
+		return ErrJobNotFound
+	}
+	if !j.Snapshot().State.terminal() {
+		return ErrJobNotTerminal
+	}
+	delete(m.jobs, id)
+	return nil
+}
+
+// ClearTerminalRecords removes all terminal jobs from the in-memory registry.
+func (m *Manager) ClearTerminalRecords() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pruneLocked()
+	cleared := 0
+	for id, j := range m.jobs {
+		if !j.Snapshot().State.terminal() {
+			continue
+		}
+		delete(m.jobs, id)
+		cleared++
+	}
+	return cleared
 }
 
 func (m *Manager) pruneLocked() {
@@ -456,6 +580,10 @@ func normalizeTargets(containers []string) []string {
 }
 
 func (m *Manager) run(ctx context.Context, j *Job, requestedContainers []string) {
+	if ctx.Err() != nil {
+		m.finish(j, StateCancelled, "cancelled")
+		return
+	}
 	j.emit(Event{Type: EventJobStart, State: StateRunning})
 
 	// Resolve container list.
@@ -463,6 +591,10 @@ func (m *Manager) run(ctx context.Context, j *Job, requestedContainers []string)
 	if len(containers) == 0 || (len(containers) == 1 && containers[0] == "*") {
 		all, err := m.store.ListContainers(ctx)
 		if err != nil {
+			if ctx.Err() != nil {
+				m.finish(j, StateCancelled, "cancelled")
+				return
+			}
 			m.finish(j, StateFailed, "list containers: "+err.Error())
 			return
 		}
@@ -478,6 +610,10 @@ func (m *Manager) run(ctx context.Context, j *Job, requestedContainers []string)
 	for _, c := range containers {
 		blobs, err := m.store.ListBlobs(ctx, c)
 		if err != nil {
+			if ctx.Err() != nil {
+				m.finish(j, StateCancelled, "cancelled")
+				return
+			}
 			m.finish(j, StateFailed, "list blobs in "+c+": "+err.Error())
 			return
 		}

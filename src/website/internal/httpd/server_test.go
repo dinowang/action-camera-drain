@@ -170,17 +170,149 @@ func TestStartJobReturnsConflictForReservedContainer(t *testing.T) {
 	}
 }
 
+func TestClearTerminalJobRecords(t *testing.T) {
+	lfs := localfs.New(t.TempDir())
+	store := &httpStorage{}
+	manager := job.NewManager(store, lfs, 1, 1)
+	cleaner := cleanup.New(store, lfs, manager)
+	frontend := fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("ok")},
+	}
+	handler := New(store, lfs, manager, cleaner, frontend).Handler()
+	first, err := manager.Start(context.Background(), []string{"camera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminalSnapshot(t, manager, first.ID)
+	second, err := manager.Start(context.Background(), []string{"secondary"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminalSnapshot(t, manager, second.ID)
+
+	clearOneRequest := httptest.NewRequest(
+		http.MethodDelete,
+		"/api/jobs/"+first.ID+"/record",
+		nil,
+	)
+	clearOneResponse := httptest.NewRecorder()
+	handler.ServeHTTP(clearOneResponse, clearOneRequest)
+	if clearOneResponse.Code != http.StatusNoContent {
+		t.Fatalf("single clear status = %d", clearOneResponse.Code)
+	}
+
+	clearAllRequest := httptest.NewRequest(
+		http.MethodDelete,
+		"/api/jobs?state=terminal",
+		nil,
+	)
+	clearAllResponse := httptest.NewRecorder()
+	handler.ServeHTTP(clearAllResponse, clearAllRequest)
+	if clearAllResponse.Code != http.StatusOK {
+		t.Fatalf("bulk clear status = %d", clearAllResponse.Code)
+	}
+	var result struct {
+		Cleared int `json:"cleared"`
+	}
+	if err := json.NewDecoder(clearAllResponse.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Cleared != 1 {
+		t.Fatalf("cleared = %d", result.Cleared)
+	}
+}
+
+func TestClearRunningJobRecordReturnsConflict(t *testing.T) {
+	lfs := localfs.New(t.TempDir())
+	store := &blockingHTTPStorage{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	manager := job.NewManager(store, lfs, 1, 1)
+	cleaner := cleanup.New(store, lfs, manager)
+	frontend := fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("ok")},
+	}
+	handler := New(store, lfs, manager, cleaner, frontend).Handler()
+	started, err := manager.Start(context.Background(), []string{"camera"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-store.started
+
+	request := httptest.NewRequest(
+		http.MethodDelete,
+		"/api/jobs/"+started.ID+"/record",
+		nil,
+	)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	close(store.release)
+	waitForTerminalSnapshot(t, manager, started.ID)
+}
+
+func TestClearMissingJobRecordReturnsNotFound(t *testing.T) {
+	handler := testServer(&httpStorage{}, localfs.New(t.TempDir()))
+	request := httptest.NewRequest(
+		http.MethodDelete,
+		"/api/jobs/missing/record",
+		nil,
+	)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
 func waitForTerminalSnapshot(t *testing.T, manager *job.Manager, id string) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		snapshot, ok := manager.GetSnapshot(id)
-		if ok && snapshot.State != job.StateRunning {
+		if ok && snapshot.State != job.StateQueued && snapshot.State != job.StateRunning {
 			return
 		}
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("job did not reach a terminal state")
+}
+
+type blockingHTTPStorage struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (*blockingHTTPStorage) ListContainers(context.Context) ([]string, error) {
+	return []string{"camera"}, nil
+}
+
+func (s *blockingHTTPStorage) ListBlobs(ctx context.Context, _ string) ([]azblob.BlobInfo, error) {
+	close(s.started)
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.release:
+		return nil, nil
+	}
+}
+
+func (*blockingHTTPStorage) Download(context.Context, string, string, io.Writer) error {
+	return nil
+}
+
+func (*blockingHTTPStorage) DeleteBlobIfMatch(context.Context, string, string, string) error {
+	return nil
+}
+
+func (*blockingHTTPStorage) DeleteContainer(context.Context, string) error {
+	return nil
 }
 
 func testServer(store azblob.Storage, lfs *localfs.FS) http.Handler {

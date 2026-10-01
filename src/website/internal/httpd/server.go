@@ -207,6 +207,17 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, s.jobs.List())
 		return
+	case http.MethodDelete:
+		if r.URL.Query().Get("state") != "terminal" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "state=terminal is required",
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]int{
+			"cleared": s.jobs.ClearTerminalRecords(),
+		})
+		return
 	case http.MethodPost:
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -240,6 +251,17 @@ func (s *Server) handleJobByID(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case len(parts) == 2 && parts[1] == "events" && r.Method == http.MethodGet:
 		s.handleJobEvents(w, r, id)
+	case len(parts) == 2 && parts[1] == "record" && r.Method == http.MethodDelete:
+		switch err := s.jobs.RemoveRecord(id); {
+		case err == nil:
+			w.WriteHeader(http.StatusNoContent)
+		case errors.Is(err, job.ErrJobNotFound):
+			http.NotFound(w, r)
+		case errors.Is(err, job.ErrJobNotTerminal):
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		default:
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
 	case len(parts) == 1 && r.Method == http.MethodGet:
 		snapshot, ok := s.jobs.GetSnapshot(id)
 		if !ok {
